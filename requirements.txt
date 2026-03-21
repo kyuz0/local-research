@@ -1,0 +1,9 @@
+python-dotenv
+rich
+tavily-python
+httpx
+markdownify
+agent-framework
+textual
+markitdown
+ddgs
