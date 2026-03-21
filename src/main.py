@@ -33,6 +33,111 @@ import config as app_config
 load_dotenv(override=True)
 app_config.load_config()
 
+_session_events = []
+_current_call_by_source = {}
+_current_text_by_source = {}
+
+def _write_log():
+    run_dir = os.environ.get("CURRENT_RUN_DIR")
+    if not run_dir: return
+    log_file = os.path.join(run_dir, "session_log.json")
+    try:
+        with open(log_file, "w", encoding="utf-8") as f:
+            json.dump(_session_events, f, indent=2)
+    except Exception:
+        pass
+
+def log_prompt(prompt: str):
+    global _session_events, _current_call_by_source, _current_text_by_source
+    _session_events = [{
+        "timestamp": datetime.now().isoformat(),
+        "source": "User",
+        "type": "prompt",
+        "data": {"text": prompt}
+    }]
+    _current_call_by_source.clear()
+    _current_text_by_source.clear()
+    _write_log()
+
+def log_stream_content(source: str, content):
+    global _session_events, _current_call_by_source, _current_text_by_source
+    
+    if content.type == "text":
+        if not content.text: return
+        _current_call_by_source[source] = None
+        
+        idx = _current_text_by_source.get(source)
+        if idx is not None and idx < len(_session_events) and _session_events[idx]["type"] == "text":
+            _session_events[idx]["data"]["text"] += content.text
+        else:
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "source": source,
+                "type": "text",
+                "data": {"text": content.text}
+            }
+            _session_events.append(entry)
+            _current_text_by_source[source] = len(_session_events) - 1
+            
+    elif content.type == "function_call":
+        _current_text_by_source[source] = None
+        
+        call_id = getattr(content, "call_id", None)
+        name = getattr(content, "name", None)
+        arguments = getattr(content, "arguments", "") or ""
+        
+        if call_id:
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "source": source,
+                "type": "function_call",
+                "data": {
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments
+                }
+            }
+            _session_events.append(entry)
+            _current_call_by_source[source] = len(_session_events) - 1
+        else:
+            idx = _current_call_by_source.get(source)
+            if idx is not None and idx < len(_session_events):
+                if arguments:
+                    _session_events[idx]["data"]["arguments"] += arguments
+            
+    elif content.type == "function_result":
+        _current_text_by_source[source] = None
+        _current_call_by_source[source] = None
+        
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "source": source,
+            "type": "function_result",
+            "data": {
+                "call_id": getattr(content, "call_id", None),
+                "result": str(getattr(content, "result", ""))
+            }
+        }
+        _session_events.append(entry)
+        
+    else:
+        _current_text_by_source[source] = None
+        _current_call_by_source[source] = None
+        data = {}
+        if hasattr(content, "model_dump"):
+            data = content.model_dump()
+            data.pop("type", None)
+            
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "source": source,
+            "type": content.type,
+            "data": data
+        }
+        _session_events.append(entry)
+        
+    _write_log()
+
 # Limits
 max_concurrent_research_units = 3
 max_researcher_iterations = 3
@@ -49,6 +154,80 @@ INSTRUCTIONS = (
         max_researcher_iterations=max_researcher_iterations,
     )
 )
+
+def setup_agents(subagent_callback=None):
+    """Initialize and return the client and orchestrator agent."""
+    base_url = app_config.cfg["api"]["openai_base_url"] or "http://localhost:8080/v1"
+    api_key = app_config.cfg["api"]["openai_api_key"] or "dummy"
+        
+    client = OpenAIChatClient(
+        base_url=base_url,
+        api_key=api_key,
+        model_id="local-model",
+        function_invocation_configuration={"max_iterations": 20}
+    )
+
+    use_dynamic = app_config.cfg["settings"]["use_dynamic_webpage_analysis"]
+    webpage_tool = get_analyze_webpage_dynamic_tool(stream_callback=subagent_callback) if use_dynamic else analyze_webpage
+
+    q = app_config.q
+    q_res_search = q("researcher", "web_search")
+    q_res_analyze = q("researcher", "analyze_webpage")
+    q_res_think = q("researcher", "think_tool")
+    q_orch_delegate = q("orchestrator", "delegate_research_task")
+    q_orch_todos = q("orchestrator", "write_todos")
+    q_orch_files = q("orchestrator", "write_file")
+
+    research_agent = client.as_agent(
+        name="research_agent",
+        description="A specialized sub-agent for executing deep research operations given a specific topic or instruction.",
+        instructions=RESEARCHER_INSTRUCTIONS.format(
+            date=current_date,
+            search_quota=q_res_search,
+            analyze_quota=q_res_analyze,
+            think_quota=q_res_think,
+        ),
+        tools=[web_search, webpage_tool, think_tool],
+    )
+
+    from agent_framework import tool
+    from tools import tool_quotas_ctx, check_quota
+
+    @tool(name="delegate-research-task", description="Delegate a research task to a specialized research sub-agent that can search the internet and analyze webpages.")
+    async def delegate_research_task(instructions: str) -> str:
+        quota_error = check_quota("delegate-research-task")
+        if quota_error: return quota_error
+            
+        sub_quotas = {
+            "web_search": {"used": 0, "limit": int(q_res_search)},
+            "analyze_webpage": {"used": 0, "limit": int(q_res_analyze)},
+            "think_tool": {"used": 0, "limit": int(q_res_think)},
+        }
+        token = tool_quotas_ctx.set(sub_quotas)
+        try:
+            final_text = ""
+            stream = research_agent.run(instructions, stream=True)
+            async for update in stream:
+                if subagent_callback:
+                    await subagent_callback(update)
+                for c in update.contents:
+                    if c.type == "text" and c.text:
+                        final_text += c.text
+            return final_text
+        finally:
+            tool_quotas_ctx.reset(token)
+
+    orchestrator = client.as_agent(
+        name="orchestrator",
+        instructions=INSTRUCTIONS.format(
+            orchestrator_quota=q_orch_delegate,
+            orchestrator_todos_quota=q_orch_todos,
+            orchestrator_files_quota=q_orch_files,
+        ),
+        tools=[delegate_research_task, write_todos, write_file, read_todos, read_file],
+    )
+    
+    return client, orchestrator
 
 class ConfigureScreen(ModalScreen[dict | None]):
     """Screen for configuring API keys and settings."""
@@ -197,6 +376,29 @@ class AgentMessage(Static):
     def append_text(self, new_text: str):
         self.text_content += new_text
         self.update(f"[b]{self.agent_name}:[/b] {self.text_content}")
+
+class ProcessingWidget(Static):
+    """Widget to display a processing indicator before the first response."""
+    DOTS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, agent_name: str = "Orchestrator"):
+        super().__init__("", classes="agent-message")
+        self.agent_name = agent_name
+        self._frame = 0
+        self._start_time = datetime.now()
+        
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.1, self._animate_dots)
+        self._animate_dots()
+
+    def _animate_dots(self) -> None:
+        self._frame = (self._frame + 1) % len(self.DOTS_FRAMES)
+        elapsed = datetime.now() - self._start_time
+        self.update(f"[b]{self.agent_name}:[/b] {self.DOTS_FRAMES[self._frame]} ({elapsed.total_seconds():.1f}s)")
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.remove()
 
 class ToolCallWidget(Collapsible):
     """Widget to display a tool call and its result."""
@@ -391,82 +593,10 @@ class DeepResearchApp(App):
             return fallback or "research"
 
     def _initialize_agents(self) -> None:
-        base_url = app_config.cfg["api"]["openai_base_url"] or "http://localhost:8080/v1"
-        api_key = app_config.cfg["api"]["openai_api_key"] or "dummy"
-            
-        # Initialize client to the vLLM or provider
-        self.client = OpenAIChatClient(
-            base_url=base_url,
-            api_key=api_key,
-            model_id="local-model",
-            function_invocation_configuration={"max_iterations": 20}
-        )
-
-        # Textual worker boundary needs call_from_thread if this is called on a different thread
-        # The OpenAIChatClient async caller will trigger this in the same asyncio event loop
-        # so we can just update the UI natively, but to be safe we use call_from_thread.
         async def researcher_stream_callback_tui(update: AgentResponseUpdate):
             self.handle_agent_update(update, True)
 
-        use_dynamic = app_config.cfg["settings"]["use_dynamic_webpage_analysis"]
-        webpage_tool = get_analyze_webpage_dynamic_tool(stream_callback=researcher_stream_callback_tui) if use_dynamic else analyze_webpage
-
-        # Read per-tool quotas from config
-        q = app_config.q
-        q_res_search = q("researcher", "web_search")
-        q_res_analyze = q("researcher", "analyze_webpage")
-        q_res_think = q("researcher", "think_tool")
-        q_orch_delegate = q("orchestrator", "delegate_research_task")
-        q_orch_todos = q("orchestrator", "write_todos")
-        q_orch_files = q("orchestrator", "write_file")
-
-        research_agent = self.client.as_agent(
-            name="research_agent",
-            description="A specialized sub-agent for executing deep research operations given a specific topic or instruction.",
-            instructions=RESEARCHER_INSTRUCTIONS.format(
-                date=current_date,
-                search_quota=q_res_search,
-                analyze_quota=q_res_analyze,
-                think_quota=q_res_think,
-            ),
-            tools=[web_search, webpage_tool, think_tool],
-        )
-
-        from agent_framework import tool
-        from tools import tool_quotas_ctx, check_quota
-
-        @tool(name="delegate-research-task", description="Delegate a research task to a specialized research sub-agent that can search the internet and analyze webpages.")
-        async def delegate_research_task(instructions: str) -> str:
-            quota_error = check_quota("delegate-research-task")
-            if quota_error: return quota_error
-                
-            sub_quotas = {
-                "web_search": {"used": 0, "limit": int(q_res_search)},
-                "analyze_webpage": {"used": 0, "limit": int(q_res_analyze)},
-                "think_tool": {"used": 0, "limit": int(q_res_think)},
-            }
-            token = tool_quotas_ctx.set(sub_quotas)
-            try:
-                final_text = ""
-                stream = research_agent.run(instructions, stream=True)
-                async for update in stream:
-                    await researcher_stream_callback_tui(update)
-                    for c in update.contents:
-                        if c.type == "text" and c.text:
-                            final_text += c.text
-                return final_text
-            finally:
-                tool_quotas_ctx.reset(token)
-
-        self.orchestrator = self.client.as_agent(
-            name="orchestrator",
-            instructions=INSTRUCTIONS.format(
-                orchestrator_quota=q_orch_delegate,
-                orchestrator_todos_quota=q_orch_todos,
-                orchestrator_files_quota=q_orch_files,
-            ),
-            tools=[delegate_research_task, write_todos, write_file, read_todos, read_file],
-        )
+        self.client, self.orchestrator = setup_agents(researcher_stream_callback_tui)
 
     def on_mount(self) -> None:
         self.query_one("#prompt-input").focus()
@@ -674,6 +804,7 @@ class DeepResearchApp(App):
         run_dir = os.path.join("runs", f"{timestamp}-{query_title}")
         os.makedirs(run_dir, exist_ok=True)
         os.environ["CURRENT_RUN_DIR"] = run_dir
+        log_prompt(query)
         
         # Reset state for a new run
         self.orchestrator_state = {"calls": {}, "current_call_id": None, "current_msg": None}
@@ -697,12 +828,24 @@ class DeepResearchApp(App):
         
         from tools import tool_quotas_ctx
         token = tool_quotas_ctx.set(quotas)
+        chat_container = self.query_one("#chat-container", VerticalScroll)
+        processing_widget = ProcessingWidget("Orchestrator")
+        await chat_container.mount(processing_widget)
+        chat_container.scroll_end(animate=False)
+        
         try:
+            first_update = True
             stream = self.orchestrator.run(query, stream=True)
             async for update in stream:
+                if first_update:
+                    processing_widget.stop()
+                    first_update = False
                 # the generator is async and runs in the Textual event loop 
                 # we can update the UI directly since we are on the main thread
                 self.handle_agent_update(update, False)
+            
+            if first_update:
+                processing_widget.stop()
             
             elapsed = datetime.now() - start_time
             chat_container = self.query_one("#chat-container", VerticalScroll)
@@ -717,6 +860,9 @@ class DeepResearchApp(App):
         state = self.subagent_state if is_subagent else self.orchestrator_state
         agent_name = getattr(update, "author_name", None) or ("Sub-Agent" if is_subagent else "Orchestrator")
         
+        for content in update.contents:
+            log_stream_content(agent_name, content)
+            
         chat_container = self.query_one("#chat-container", VerticalScroll)
         # Only auto-scroll if user is already near the bottom
         near_bottom = chat_container.scroll_y >= (chat_container.max_scroll_y - 3)
@@ -764,6 +910,72 @@ class DeepResearchApp(App):
         chat_container.scroll_end(animate=False)
 
 
+async def run_cli(prompt: str) -> None:
+    from tools import tool_quotas_ctx
+    import sys
+    
+    async def cli_subagent_callback(update: AgentResponseUpdate):
+        agent_name = getattr(update, "author_name", None) or "Sub-Agent"
+        for content in update.contents:
+            log_stream_content(agent_name, content)
+            if content.type == "function_call":
+                if content.call_id:
+                    sys.stdout.write(f"\n\033[93m[Subagent] Calling {content.name}...\033[0m\n")
+            elif content.type == "function_result":
+                sys.stdout.write(f"\033[92m[Subagent] Result -> {len(str(content.result))} chars\033[0m\n")
+
+    client, orchestrator = setup_agents(cli_subagent_callback)
+
+    q = app_config.q
+    quotas = {
+        "delegate-research-task": {"used": 0, "limit": q("orchestrator", "delegate_research_task")},
+        "write_todos": {"used": 0, "limit": q("orchestrator", "write_todos")},
+        "read_todos": {"used": 0, "limit": q("orchestrator", "read_todos")},
+        "write_file": {"used": 0, "limit": q("orchestrator", "write_file")},
+        "read_file": {"used": 0, "limit": q("orchestrator", "read_file")},
+    }
+    
+    token = tool_quotas_ctx.set(quotas)
+    print(f"\033[1mStarting research on:\033[0m {prompt}\n")
+    start_time = datetime.now()
+    try:
+        stream = orchestrator.run(prompt, stream=True)
+        async for update in stream:
+            agent_name = getattr(update, "author_name", None) or "Orchestrator"
+            for content in update.contents:
+                log_stream_content(agent_name, content)
+                if content.type == "text" and content.text:
+                    sys.stdout.write(content.text)
+                    sys.stdout.flush()
+                elif content.type == "function_call":
+                    if content.call_id:
+                        sys.stdout.write(f"\n\033[96m[Orchestrator] Calling {content.name}...\033[0m\n")
+                elif content.type == "function_result":
+                    pass # Keep it clean
+        elapsed = datetime.now() - start_time
+        print(f"\n\n\033[1mResearch completed in {elapsed.total_seconds():.1f} seconds.\033[0m")
+    except Exception as e:
+        print(f"\n\033[91mError:\033[0m {e}")
+    finally:
+        tool_quotas_ctx.reset(token)
+
 if __name__ == "__main__":
-    app = DeepResearchApp()
-    app.run()
+    import argparse
+    parser = argparse.ArgumentParser(description="DeepResearch Agent CLI / TUI")
+    parser.add_argument("--prompt", type=str, help="Run non-interactively with a specific prompt", default=None)
+    args, unknown = parser.parse_known_args()
+    
+    if args.prompt:
+        import re
+        run_name = re.sub(r'[^a-z0-9\-]', '', args.prompt[:40].lower().replace(" ", "-"))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = os.path.join("runs", f"cli_{timestamp}_{run_name}")
+        os.makedirs(run_dir, exist_ok=True)
+        os.environ["CURRENT_RUN_DIR"] = run_dir
+        log_prompt(args.prompt)
+        
+        asyncio.run(run_cli(args.prompt))
+    else:
+        app = DeepResearchApp()
+        app.run()
+
