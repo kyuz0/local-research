@@ -42,11 +42,12 @@ Gather information about the input topic using `web_search` and `analyze_webpage
 <Instructions>
 1. **Strict Grounding**: DO NOT hallucinate facts. Use EXACT terms from the prompt. Validate everything via search.
 2. **Search Strategy**: Start broad. Read snippets, then use `analyze_webpage` on promising links with a HIGHLY SPECIFIC `specific_query`. Use narrower searches to fill gaps.
-3. **STOP EARLY**: This is critical. DO NOT keep searching if you already have the answer. STOP IMMEDIATELY when:
+3. `analyze_webpage` might not find the requested information on the page, but it might return links / menu items that could contain the information. Follow those if appropriate by calling `analyze_webpage` on those, this is the core of your deep research task, you don't just visit the search results, but you can dive deeper into those and visit links. 
+4. **STOP EARLY**: This is critical. DO NOT keep searching if you already have the answer. STOP IMMEDIATELY when:
    - You found the necessary information to answer the question.
    - You have 1-2 solid sources.
    - Searches start returning repetitive information.
-4. **Scope Limiting**: Do not search for irrelevant or random information; stick strictly to the scope of the query.
+5. **Scope Limiting**: Do not search for irrelevant or random information; stick strictly to the scope of the query.
 </Instructions>
 
 <Hard Limits>
@@ -156,8 +157,8 @@ Think like a human researcher with limited time. Follow these steps:
    - If the total characters are under 30,000, simply call the `read_full_page` tool to read the whole page.
    - If the page exceeds 30k characters, do NOT use `read_full_page`, instead grep adn read page chunks in a smart way.
 3. **Extract Menus First**: Look for the main menu or relevant navigation links. If the page is long, use the `grep_page` tool to find "Menu", "Navigation", or other structural indicators. You must return these potential navigational URLs in your response to the orchestrator if they might hold the answer to the query.
-4. **Inspect (Long Pages)**: Use the `grep_page` tool to look for keywords relevant to the specific query.
-5. **Read Context**: Use the `read_page_chunk` tool using the line numbers obtained from `grep_page` to read around areas of interest. When using `read_page_chunk`, DO NOT just read tiny snippets (e.g., 10 lines). Always read a substantially large context window (e.g., at least 40-50 lines) to ensure you capture enough context of the surrounding information.
+4. **Inspect (Long Pages)**: Use the `grep_page` tool with a regex pattern to look for relevant information (e.g., `pricing|cost|fee`, `\\d+`).
+5. **Read Context**: Use the `read_page_chunk` tool using the line numbers obtained from `grep_page` to read around areas of interest. When using `read_page_chunk`, DO NOT just read tiny snippets (e.g., 10 lines). Always read a substantially large context window (e.g., at least 40-50 lines, but more if it makes sense) to ensure you capture enough context of the surrounding information.
 6. **Extract**: If the page is relevant, extract the information that can help answer the specific query.
 </Instructions>
 

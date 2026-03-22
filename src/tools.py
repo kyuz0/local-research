@@ -345,20 +345,24 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
             return content
             
         @tool(approval_mode="never_require")
-        def grep_page(keyword: str, context_lines: int = 2) -> str:
-            """Search for a keyword across the page lines and return matching lines with context.
+        def grep_page(pattern: str, context_lines: int = 2) -> str:
+            """Search for a regex pattern across the page lines and return matching lines with context.
             
             Args:
-                keyword: The string to search for
+                pattern: The regular expression string to search for
                 context_lines: Number of lines to include before and after the match
             """
             quota_error = check_quota("grep_page")
             if quota_error: return quota_error
             
+            try:
+                regex = re.compile(pattern, re.IGNORECASE)
+            except re.error as e:
+                return f"Invalid regex pattern '{pattern}': {e}. Please fix the regex syntax."
+
             results = []
-            keyword_lower = keyword.lower()
             for i, line in enumerate(lines):
-                if keyword_lower in line.lower():
+                if regex.search(line):
                     start = max(0, i - context_lines)
                     end = min(len(lines), i + context_lines + 1)
                     chunk = []
@@ -368,7 +372,7 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
                     results.append("-" * 40)
             
             if not results:
-                return f"Keyword '{keyword}' not found."
+                return f"Pattern '{pattern}' not found."
             return "\n".join(results)
             
         @tool(approval_mode="never_require")

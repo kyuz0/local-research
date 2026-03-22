@@ -1,0 +1,15 @@
+api:
+  # To use a different LLM client for evaluating the agent's performance,
+  # specify the client class and its initialization arguments here.
+  # Example for Anthropic:
+  # client_class: agent_framework.anthropic.AnthropicChatClient
+  # client_kwargs:
+  #   model_id: claude-3-5-sonnet-20241022
+  #   api_key: will be loaded from ANTHROPIC_API_KEY environment variable
+
+  client_class: agent_framework.openai.OpenAIChatClient
+  client_kwargs:
+    # We default to a strong evaluation model like gpt-4o for the judge.
+    base_url: https://api.openai.com/v1
+    model_id: gpt-5.4-nano
+    # api_key is automatically loaded from the OPENAI_API_KEY environment variable

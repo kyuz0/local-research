@@ -10,9 +10,14 @@ import collections
 from itertools import product
 from datetime import datetime
 
+import dotenv
+from dotenv import load_dotenv
+
 # Add src to python path to import config and LLM client
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 import config as app_config
+
+load_dotenv(override=True)
 from agent_framework.openai import OpenAIChatClient
 
 
@@ -140,6 +145,8 @@ def main():
     parser.add_argument("--runs",    type=int, default=3,                     help="Number of times to run each query per variant")
     parser.add_argument("--config",  "-c", type=str, default=None, metavar="PATH",
                         help="Base config YAML to use (default: src/config.yaml)")
+    parser.add_argument("--eval-config", type=str, default="eval/eval_config.yaml",
+                        help="Config YAML specifically for the evaluator LLM client")
 
     # Variant-selection flags
     parser.add_argument(
@@ -171,24 +178,47 @@ def main():
     app_config.load_config(path=args.config)
     base_cfg = app_config.cfg
 
-    # Setup LLM client
-    base_url = base_cfg.get("api", {}).get("openai_base_url") or "http://localhost:8080/v1"
-    api_key  = base_cfg.get("api", {}).get("openai_api_key")  or "dummy"
-    client   = OpenAIChatClient(base_url=base_url, api_key=api_key, model_id="local-model")
+    # Setup evaluator LLM client
+    if os.path.exists(args.eval_config):
+        with open(args.eval_config, 'r') as f:
+            eval_cfg = yaml.safe_load(f)
+    else:
+        print(f"Warning: Evaluator config not found at {args.eval_config}, falling back to base config")
+        eval_cfg = base_cfg
 
-    model_name = args.model
-    if model_name == "unknown":
-        try:
-            import urllib.request
-            req = urllib.request.Request(f"{base_url}/models")
-            if api_key and api_key != "dummy":
-                req.add_header("Authorization", f"Bearer {api_key}")
-            with urllib.request.urlopen(req, timeout=5) as response:
-                models_data = json.loads(response.read().decode())
-                if "data" in models_data and len(models_data["data"]) > 0:
-                    model_name = models_data["data"][0].get("id", "unknown")
-        except Exception as e:
-            print(f"Warning: Could not auto-detect model from {base_url}/models: {e}")
+    api_cfg = eval_cfg.get("api", {})
+    client_class_path = api_cfg.get("client_class")
+
+    if client_class_path:
+        import importlib
+        module_name, class_name = client_class_path.rsplit(".", 1)
+        mod = importlib.import_module(module_name)
+        ClientClass = getattr(mod, class_name)
+        client_kwargs = api_cfg.get("client_kwargs", {})
+        client = ClientClass(**client_kwargs)
+        
+        model_name = args.model
+        if model_name == "unknown":
+            model_name = client_kwargs.get("model_id") or "unknown"
+    else:
+        base_url = api_cfg.get("openai_base_url") or "http://localhost:8080/v1"
+        api_key  = api_cfg.get("openai_api_key")  or "dummy"
+        from agent_framework.openai import OpenAIChatClient
+        client   = OpenAIChatClient(base_url=base_url, api_key=api_key, model_id="local-model")
+
+        model_name = args.model
+        if model_name == "unknown":
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"{base_url}/models")
+                if api_key and api_key != "dummy":
+                    req.add_header("Authorization", f"Bearer {api_key}")
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    models_data = json.loads(response.read().decode())
+                    if "data" in models_data and len(models_data["data"]) > 0:
+                        model_name = models_data["data"][0].get("id", "unknown")
+            except Exception as e:
+                print(f"Warning: Could not auto-detect model from {base_url}/models: {e}")
 
     import re
     model_name = re.sub(r'-\d+-of-\d+\.gguf$', '', model_name)
