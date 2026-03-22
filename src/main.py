@@ -260,6 +260,8 @@ class ConfigureScreen(ModalScreen[dict | None]):
         color: $text-muted;
         text-style: italic;
         padding-bottom: 1;
+        width: 100%;
+        height: auto;
     }
     .switch-container {
         height: auto;
@@ -336,7 +338,8 @@ class ConfigureScreen(ModalScreen[dict | None]):
                     yield Label("", id="profile_summary", classes="config-hint")
             
             with Horizontal(id="config-buttons"):
-                yield Button("Save", variant="primary", id="save")
+                yield Button("Save for Session", variant="primary", id="save_session")
+                yield Button("Save & Persist", id="save_persist")
                 yield Button("Cancel", id="cancel")
                 
     def on_mount(self) -> None:
@@ -374,8 +377,15 @@ class ConfigureScreen(ModalScreen[dict | None]):
         )
         summary_label.update(summary)
 
-    @on(Button.Pressed, "#save")
-    def action_save(self) -> None:
+    @on(Button.Pressed, "#save_session")
+    def action_save_session(self) -> None:
+        self._dismiss_with_result(persist=False)
+
+    @on(Button.Pressed, "#save_persist")
+    def action_save_persist(self) -> None:
+        self._dismiss_with_result(persist=True)
+
+    def _dismiss_with_result(self, persist: bool) -> None:
         result = {
             "api_base": self.query_one("#api_base", Input).value.strip(),
             "api_key": self.query_one("#api_key", Input).value.strip(),
@@ -385,6 +395,7 @@ class ConfigureScreen(ModalScreen[dict | None]):
             "search_provider": self.query_one("#search_provider", Select).value,
             "use_bm25": str(self.query_one("#use_bm25", Switch).value).lower(),
             "search_profile": self.query_one("#search_profile_select", Select).value,
+            "persist": persist,
         }
         self.dismiss(result)
 
@@ -581,6 +592,30 @@ class DeepResearchApp(App):
         color: $text-muted;
         padding: 0 2 1 2;
     }
+    .file-viewer-wrapper {
+        height: auto;
+    }
+    .file-viewer-collapsible {
+        width: 1fr;
+    }
+    .file-viewer-inner {
+        height: auto;
+    }
+    .title-copy-btn {
+        dock: right;
+        width: auto;
+        height: 1;
+        min-width: 3;
+        border: none;
+        background: transparent;
+        color: $text-muted;
+        padding: 0;
+        margin: 0 1 0 0;
+    }
+    .title-copy-btn:hover {
+        color: $text;
+        background: transparent;
+    }
     """
 
     BINDINGS = [
@@ -600,6 +635,8 @@ class DeepResearchApp(App):
         super().__init__()
         self.client = None
         self.orchestrator = None
+        self._has_run_research = False
+        self._pending_new_query = None
         self._filtered_cmds: list[tuple[str, str]] = []
         self._cmd_index: int = 0
         self._file_picker_active: bool = False
@@ -697,29 +734,52 @@ class DeepResearchApp(App):
         self._cmd_index = 0
         self._render_cmd_list()
 
+    def _display_file(self, filename: str, collapsed_by_default: bool = False) -> None:
+        """Display a file's content in a collapsible widget within the chat."""
+        run_dir = os.environ.get("CURRENT_RUN_DIR", ".")
+        filepath = os.path.join(run_dir, filename)
+        if not os.path.exists(filepath):
+            return
+            
+        chat_container = self.query_one("#chat-container", VerticalScroll)
+        try:
+            with open(filepath, "r") as f:
+                content = f.read()
+            from textual.containers import Vertical
+            file_log = RichLog(wrap=True, markup=True, highlight=True, min_width=20)
+            copy_btn = Button("📋", id=f"copy-btn-{id(file_log)}", classes="title-copy-btn")
+            copy_btn._file_content = content
+            inner = Vertical(copy_btn, file_log, classes="file-viewer-inner")
+            viewer = Collapsible(inner, title=f"\N{OPEN FILE FOLDER} {filename}", classes="file-viewer-collapsible")
+            wrapper = Vertical(viewer, classes="tool-call file-viewer-wrapper")
+            chat_container.mount(wrapper)
+            viewer.collapsed = collapsed_by_default
+            file_log.write(content)
+        except Exception as e:
+            chat_container.mount(AgentMessage("System", f"Error reading {filename}: {e}"))
+        chat_container.scroll_end(animate=False)
+
+    @on(Button.Pressed, ".title-copy-btn")
+    def on_copy_button(self, event: Button.Pressed) -> None:
+        if hasattr(event.button, "_file_content"):
+            self.app.copy_to_clipboard(event.button._file_content)
+            btn = event.button
+            btn.label = "✅"
+            def reset():
+                btn.label = "📋"
+            self.set_timer(2.0, reset)
+
     def _open_selected_file(self) -> None:
         """Open the currently selected file in the file picker."""
         if not self._file_picker_active or not self._file_picker_files:
             return
         filename = self._filtered_cmds[self._cmd_index][0]
-        run_dir = os.environ.get("CURRENT_RUN_DIR", ".")
-        filepath = os.path.join(run_dir, filename)
-        chat_container = self.query_one("#chat-container", VerticalScroll)
-        try:
-            with open(filepath, "r") as f:
-                content = f.read()
-            file_log = RichLog(wrap=True, markup=True, highlight=True, min_width=20)
-            viewer = Collapsible(file_log, title=f"\N{OPEN FILE FOLDER} {filename}", classes="tool-call")
-            chat_container.mount(viewer)
-            viewer.collapsed = False
-            file_log.write(content)
-        except Exception as e:
-            chat_container.mount(AgentMessage("System", f"Error reading {filename}: {e}"))
+        self._display_file(filename)
+        
         # Close the picker
         self._file_picker_active = False
         self._filtered_cmds = []
         self._render_cmd_list()
-        chat_container.scroll_end(animate=False)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if self._file_picker_active:
@@ -785,8 +845,24 @@ class DeepResearchApp(App):
             return
             
         chat_container = self.query_one("#chat-container", VerticalScroll)
+
+        if self._pending_new_query is not None:
+            if query.lower() in ("y", "yes"):
+                query = self._pending_new_query
+                self._pending_new_query = None
+                self._has_run_research = False
+                await chat_container.remove_children()
+                await chat_container.mount(self._banner_widget())
+                self.on_mount()
+            else:
+                self._pending_new_query = None
+                await chat_container.mount(AgentMessage("System", "Cancelled new session."))
+                chat_container.scroll_end(animate=False)
+                return
         
         if query.lower() == "/new":
+            self._has_run_research = False
+            self._pending_new_query = None
             await chat_container.remove_children()
             await chat_container.mount(self._banner_widget())
             self.on_mount()
@@ -821,13 +897,17 @@ class DeepResearchApp(App):
                     os.environ["OPENAI_MODEL"] = result["api_model"] or "local-model"
                     os.environ["TAVILY_API_KEY"] = result["tavily_key"]
                     
-                    # Save to config.yaml
-                    app_config.save_config()
+                    # Save to config.yaml if requested
+                    if result.get("persist"):
+                        app_config.save_config()
+                        msg = "Configuration saved & persisted! Agents re-initialized."
+                    else:
+                        msg = "Configuration applied to current session! Agents re-initialized."
                     
                     self._initialize_agents()
                     
                     # Notify user
-                    chat_container.mount(AgentMessage("System", "Configuration saved! Agents re-initialized."))
+                    chat_container.mount(AgentMessage("System", msg))
                     chat_container.scroll_end(animate=False)
 
             self.push_screen(ConfigureScreen(), config_callback)
@@ -844,9 +924,6 @@ class DeepResearchApp(App):
             await chat_container.mount(AgentMessage("System", "Available commands:\n/new - Start fresh research\n/stop - Stop current research\n/configure - Edit settings and API keys\n/files - Browse session files\n/exit - Quit application\n/help - Show this message\nAny other text will be processed as a research query."))
             chat_container.scroll_end(animate=False)
             return
-            
-        await chat_container.mount(UserMessage(query))
-        chat_container.scroll_end(animate=False)
 
         if self._is_searching:
             await chat_container.mount(AgentMessage(
@@ -856,6 +933,18 @@ class DeepResearchApp(App):
             ))
             chat_container.scroll_end(animate=False)
             return
+
+        if self._has_run_research:
+            self._pending_new_query = query
+            await chat_container.mount(UserMessage(query))
+            await chat_container.mount(AgentMessage("System", "Asking a new question will open a new session. Continue? (y/n)"))
+            chat_container.scroll_end(animate=False)
+            return
+
+        self._has_run_research = True
+            
+        await chat_container.mount(UserMessage(query))
+        chat_container.scroll_end(animate=False)
         
         # Generate a human-readable run folder name: timestamp-query-title
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -915,6 +1004,8 @@ class DeepResearchApp(App):
             chat_container = self.query_one("#chat-container", VerticalScroll)
             chat_container.mount(AgentMessage("System", f"Research completed in {elapsed.total_seconds():.1f} seconds."))
             chat_container.scroll_end(animate=False)
+            
+            self._display_file("final_report.md", collapsed_by_default=True)
         except Exception as e:
             self.log_error(str(e))
         finally:
