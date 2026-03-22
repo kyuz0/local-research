@@ -1,5 +1,6 @@
 api:
-  openai_base_url: http://localhost:8080/v1
+  openai_base_url: 'http://localhost:8080/v1'
+  openai_model: local-model
 settings:
   use_dynamic_webpage_analysis: true
   search_provider: duckduckgo

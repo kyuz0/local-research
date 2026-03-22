@@ -88,11 +88,15 @@ def fetch_webpage_content(url: str, timeout: float = 10.0) -> str:
 
 
 def _create_llm_client() -> OpenAIChatClient:
-    """Create an OpenAI chat client using values from config."""
+    """Create an OpenAI chat client using values from config and environment variables for secrets."""
+    base_url = app_config.cfg["api"].get("openai_base_url") or "https://api.openai.com/v1"
+    api_key = os.environ.get("OPENAI_API_KEY") or "dummy"
+    model_id = app_config.cfg["api"].get("openai_model", "local-model") or "local-model"
+    
     return OpenAIChatClient(
-        base_url=app_config.cfg["api"]["openai_base_url"] or "http://localhost:8080/v1",
-        api_key=app_config.cfg["api"]["openai_api_key"] or "dummy",
-        model_id="local-model"
+        base_url=base_url,
+        api_key=api_key,
+        model_id=model_id
     )
 
 
@@ -194,21 +198,24 @@ async def analyze_webpage(
     if quota_error:
         return quota_error
 
-    content = fetch_webpage_content(url)
-    
-    client = _create_llm_client()
-    
-    agent = client.as_agent(
-        name="url_analyzer",
-        instructions=URL_ANALYZER_INSTRUCTIONS.format(
-            date=datetime.now().strftime("%Y-%m-%d"),
-        ),
-        default_options={"temperature": 0.0},
-    )
-    
-    prompt = f"Upstream query: {upstream_query}\nSpecific query: {specific_query}\nURL: {url}\nPage Content:\n\n{content}\n"
-    response = await agent.run(prompt)
-    return response.text
+    try:
+        content = fetch_webpage_content(url)
+        
+        client = _create_llm_client()
+        
+        agent = client.as_agent(
+            name="url_analyzer",
+            instructions=URL_ANALYZER_INSTRUCTIONS.format(
+                date=datetime.now().strftime("%Y-%m-%d"),
+            ),
+            default_options={"temperature": 0.0},
+        )
+        
+        prompt = f"Upstream query: {upstream_query}\nSpecific query: {specific_query}\nURL: {url}\nPage Content:\n\n{content}\n"
+        response = await agent.run(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error analyzing webpage {url}: {str(e)}"
 
 
 def _slugify_url(url: str) -> str:
@@ -309,6 +316,8 @@ async def _run_agent_with_quotas(agent, prompt: str, quotas: dict, stream_callba
         else:
             response = await agent.run(prompt)
             return response.text
+    except Exception as e:
+        return f"Agent execution failed: {str(e)}"
     finally:
         tool_quotas_ctx.reset(token)
 
@@ -360,20 +369,23 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
             except re.error as e:
                 return f"Invalid regex pattern '{pattern}': {e}. Please fix the regex syntax."
 
-            results = []
-            for i, line in enumerate(lines):
-                if regex.search(line):
-                    start = max(0, i - context_lines)
-                    end = min(len(lines), i + context_lines + 1)
-                    chunk = []
-                    for j in range(start, end):
-                        chunk.append(f"{j + 1}: {lines[j]}")
-                    results.append("\n".join(chunk))
-                    results.append("-" * 40)
-            
-            if not results:
-                return f"Pattern '{pattern}' not found."
-            return "\n".join(results)
+            try:
+                results = []
+                for i, line in enumerate(lines):
+                    if regex.search(line):
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        chunk = []
+                        for j in range(start, end):
+                            chunk.append(f"{j + 1}: {lines[j]}")
+                        results.append("\n".join(chunk))
+                        results.append("-" * 40)
+                
+                if not results:
+                    return f"Pattern '{pattern}' not found."
+                return "\n".join(results)
+            except Exception as e:
+                return f"Error executing grep search with pattern '{pattern}': {str(e)}"
             
         @tool(approval_mode="never_require")
         def read_page_chunk(start_line: int, end_line: int) -> str:
@@ -386,12 +398,15 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
             quota_error = check_quota("read_page_chunk")
             if quota_error: return quota_error
             
-            start = max(0, start_line - 1)
-            end = min(len(lines), end_line)
-            chunk = []
-            for i in range(start, end):
-                chunk.append(f"{i + 1}: {lines[i]}")
-            return "\n".join(chunk)
+            try:
+                start = max(0, start_line - 1)
+                end = min(len(lines), end_line)
+                chunk = []
+                for i in range(start, end):
+                    chunk.append(f"{i + 1}: {lines[i]}")
+                return "\n".join(chunk)
+            except Exception as e:
+                return f"Error reading page chunk lines {start_line}-{end_line}: {str(e)}"
 
         client = _create_llm_client()
         
@@ -423,9 +438,12 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
         if bm25_hint:
             prompt += f"\n{bm25_hint}\n"
 
-        return await _run_agent_with_quotas(
-            agent, prompt, _build_url_analyzer_quotas(), stream_callback
-        )
+        try:
+            return await _run_agent_with_quotas(
+                agent, prompt, _build_url_analyzer_quotas(), stream_callback
+            )
+        except Exception as e:
+            return f"Error starting dynamic analysis for {url}: {str(e)}"
             
     return analyze_webpage
 

@@ -14,6 +14,7 @@ _active_config_path: str = _CONFIG_PATH  # may be overridden by load_config(path
 _DEFAULTS = {
     "api": {
         "openai_base_url": "http://localhost:8080/v1",
+        "openai_model": "local-model",
     },
     "settings": {
         "use_dynamic_webpage_analysis": False,
@@ -86,10 +87,8 @@ def load_config(path: str | None = None) -> dict:
     # Overlay API keys from environment if set (env takes priority for secrets)
     if os.environ.get("OPENAI_API_BASE"):
         cfg["api"]["openai_base_url"] = os.environ["OPENAI_API_BASE"]
-    if os.environ.get("OPENAI_API_KEY"):
-        cfg["api"]["openai_api_key"] = os.environ["OPENAI_API_KEY"]
-    if os.environ.get("TAVILY_API_KEY"):
-        cfg["api"]["tavily_api_key"] = os.environ["TAVILY_API_KEY"]
+    if os.environ.get("OPENAI_MODEL"):
+        cfg["api"]["openai_model"] = os.environ["OPENAI_MODEL"]
 
     return cfg
 

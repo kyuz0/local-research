@@ -159,13 +159,14 @@ INSTRUCTIONS = (
 
 def setup_agents(subagent_callback=None):
     """Initialize and return the client and orchestrator agent."""
-    base_url = app_config.cfg["api"]["openai_base_url"] or "http://localhost:8080/v1"
-    api_key = app_config.cfg["api"]["openai_api_key"] or "dummy"
+    base_url = app_config.cfg["api"].get("openai_base_url") or "https://api.openai.com/v1"
+    api_key = os.environ.get("OPENAI_API_KEY") or "dummy"
+    model_id = app_config.cfg["api"].get("openai_model", "local-model") or "local-model"
         
     client = OpenAIChatClient(
         base_url=base_url,
         api_key=api_key,
-        model_id="local-model",
+        model_id=model_id,
         function_invocation_configuration={"max_iterations": 20}
     )
 
@@ -286,21 +287,18 @@ class ConfigureScreen(ModalScreen[dict | None]):
             with TabbedContent():
                 with TabPane("General / API", id="tab-api"):
                     yield Label("OpenAI API Base URL", classes="config-label")
-                    yield Input(value=os.environ.get("OPENAI_API_BASE", "http://localhost:8080/v1"), id="api_base")
+                    yield Input(value=os.environ.get("OPENAI_API_BASE", app_config.cfg["api"].get("openai_base_url", "")), id="api_base")
                     
                     yield Label("OpenAI API Key", classes="config-label")
                     yield Input(value=os.environ.get("OPENAI_API_KEY", ""), password=True, id="api_key")
                     
+                    yield Label("OpenAI Model", classes="config-label")
+                    yield Label("Required for official OpenAI endpoints (e.g. gpt-4o).", classes="config-hint")
+                    yield Input(value=os.environ.get("OPENAI_MODEL", app_config.cfg["api"].get("openai_model", "local-model") or "local-model"), id="api_model")
+                    
                     yield Label("Tavily API Key", classes="config-label")
                     yield Input(value=os.environ.get("TAVILY_API_KEY", ""), password=True, id="tavily_key")
                     
-                    use_dynamic = app_config.cfg["settings"]["use_dynamic_webpage_analysis"]
-                    yield Label("Dynamic Web Page Analysis", classes="config-label")
-                    yield Label("Reduces token usage with large pages, but might miss some information.", classes="config-hint")
-                    with Horizontal(classes="switch-container"):
-                        yield Label("Enable:", classes="switch-label")
-                        yield Switch(value=use_dynamic, id="use_dynamic")
-                        
                     yield Label("Search Provider", classes="config-label")
                     current_provider = app_config.cfg.get("settings", {}).get("search_provider", "duckduckgo")
                     yield Select(
@@ -309,12 +307,19 @@ class ConfigureScreen(ModalScreen[dict | None]):
                         id="search_provider"
                     )
 
+                    use_dynamic = app_config.cfg["settings"]["use_dynamic_webpage_analysis"]
+                    yield Label("Dynamic Web Page Analysis", classes="config-label")
+                    yield Label("Reduces token usage with large pages, but might miss some information.", classes="config-hint")
+                    with Horizontal(classes="switch-container"):
+                        yield Label("Enable:", classes="switch-label")
+                        yield Switch(value=use_dynamic, id="use_dynamic")
+
                     use_bm25 = app_config.cfg.get("settings", {}).get("use_bm25_hints", False)
                     yield Label("BM25 Line Hints", classes="config-label")
                     yield Label("Pre-score page lines with BM25 to guide the URL analyzer (requires rank-bm25).", classes="config-hint")
                     with Horizontal(classes="switch-container"):
                         yield Label("Enable:", classes="switch-label")
-                        yield Switch(value=use_bm25, id="use_bm25")
+                        yield Switch(value=use_bm25, id="use_bm25", disabled=not use_dynamic)
                 
                 with TabPane("Search Profile", id="tab-profile"):
                     profiles = app_config.cfg.get("profiles", {})
@@ -336,6 +341,13 @@ class ConfigureScreen(ModalScreen[dict | None]):
                 
     def on_mount(self) -> None:
         self._update_profile_info(app_config.cfg.get("search_profile", "default"))
+
+    @on(Switch.Changed, "#use_dynamic")
+    def on_use_dynamic_changed(self, event: Switch.Changed) -> None:
+        bm25_switch = self.query_one("#use_bm25", Switch)
+        bm25_switch.disabled = not event.value
+        if not event.value:
+            bm25_switch.value = False
 
     @on(Select.Changed, "#search_profile_select")
     def on_profile_select_changed(self, event: Select.Changed) -> None:
@@ -367,6 +379,7 @@ class ConfigureScreen(ModalScreen[dict | None]):
         result = {
             "api_base": self.query_one("#api_base", Input).value.strip(),
             "api_key": self.query_one("#api_key", Input).value.strip(),
+            "api_model": self.query_one("#api_model", Input).value.strip(),
             "tavily_key": self.query_one("#tavily_key", Input).value.strip(),
             "use_dynamic": str(self.query_one("#use_dynamic", Switch).value).lower(),
             "search_provider": self.query_one("#search_provider", Select).value,
@@ -602,16 +615,19 @@ class DeepResearchApp(App):
         provider   = cfg.get("settings", {}).get("search_provider", "duckduckgo")
         dynamic    = cfg.get("settings", {}).get("use_dynamic_webpage_analysis", False)
         bm25       = cfg.get("settings", {}).get("use_bm25_hints", False)
-        base_url   = cfg.get("api", {}).get("openai_base_url", "")
+        base_url   = cfg.get("api", {}).get("openai_base_url") or "https://api.openai.com/v1"
+        model      = cfg.get("api", {}).get("openai_model", "local-model") or "local-model"
+        profile    = cfg.get("search_profile", "default")
         lines = [
             _BANNER,
             "",
             "  Agent-driven search • optimized for local LLMs",
             "",
+            f"  ✓ search profile  : {profile}",
             f"  ✓ search provider : {provider}",
             f"  ✓ dynamic analysis: {'on' if dynamic else 'off'}   "
             f"  bm25 hints: {'on' if bm25 else 'off'}",
-            f"  ✓ LLM endpoint    : {base_url}",
+            f"  ✓ LLM endpoint    : {base_url} ({model})",
             "",
             "  Ready! Type a query or /help for commands.",
         ]
@@ -791,8 +807,7 @@ class DeepResearchApp(App):
                 if result:
                     # Update API settings
                     app_config.cfg["api"]["openai_base_url"] = result["api_base"]
-                    app_config.cfg["api"]["openai_api_key"] = result["api_key"]
-                    app_config.cfg["api"]["tavily_api_key"] = result["tavily_key"]
+                    app_config.cfg["api"]["openai_model"] = result["api_model"] or "local-model"
                     app_config.cfg["settings"]["use_dynamic_webpage_analysis"] = result["use_dynamic"] == "true"
                     app_config.cfg["settings"]["search_provider"] = result.get("search_provider", "duckduckgo")
                     app_config.cfg["settings"]["use_bm25_hints"] = result.get("use_bm25", "false") == "true"
@@ -803,6 +818,7 @@ class DeepResearchApp(App):
                     # Also push API keys to env (for Tavily client etc.)
                     os.environ["OPENAI_API_BASE"] = result["api_base"]
                     os.environ["OPENAI_API_KEY"] = result["api_key"]
+                    os.environ["OPENAI_MODEL"] = result["api_model"] or "local-model"
                     os.environ["TAVILY_API_KEY"] = result["tavily_key"]
                     
                     # Save to config.yaml
