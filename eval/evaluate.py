@@ -79,6 +79,7 @@ def build_variants(args, base_cfg):
         providers    = ["duckduckgo", "tavily"]
         dynamics     = [True, False]
         bm25s        = [True, False]
+        profiles     = list(base_cfg.get("profiles", {"default": {}}).keys())
     else:
         # search_provider
         if args.search_provider == "all":
@@ -104,12 +105,21 @@ def build_variants(args, base_cfg):
         else:
             bm25s = [base_cfg.get("settings", {}).get("use_bm25_hints", False)]
 
+        # search_profile
+        if args.profile == "all":
+            profiles = list(base_cfg.get("profiles", {"default": {}}).keys())
+        elif args.profile is not None:
+            profiles = [args.profile]
+        else:
+            profiles = [base_cfg.get("search_profile", "default")]
+
     variants = []
-    for provider, dynamic, bm25 in product(providers, dynamics, bm25s):
+    for provider, dynamic, bm25, profile in product(providers, dynamics, bm25s, profiles):
         variants.append({
             "search_provider": provider,
             "use_dynamic_webpage_analysis": dynamic,
             "use_bm25_hints": bm25,
+            "search_profile": profile,
         })
     return variants
 
@@ -121,6 +131,7 @@ def write_variant_config(base_cfg, variant, tmp_dir):
     cfg_copy["settings"]["search_provider"] = variant["search_provider"]
     cfg_copy["settings"]["use_dynamic_webpage_analysis"] = variant["use_dynamic_webpage_analysis"]
     cfg_copy["settings"]["use_bm25_hints"] = variant["use_bm25_hints"]
+    cfg_copy["search_profile"] = variant["search_profile"]
     path = os.path.join(tmp_dir, "eval_variant.yaml")
     with open(path, "w") as f:
         yaml.dump(cfg_copy, f, default_flow_style=False, sort_keys=False)
@@ -133,6 +144,7 @@ def variant_key(variant):
         variant["search_provider"],
         variant["use_dynamic_webpage_analysis"],
         variant["use_bm25_hints"],
+        variant["search_profile"],
     )
 
 
@@ -168,9 +180,15 @@ def main():
         help="use_bm25_hints setting. 'all' runs both True and False.",
     )
     parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Search profile to run. 'all' runs all available profiles in config.",
+    )
+    parser.add_argument(
         "--all-variants",
         action="store_true",
-        help="Shorthand for --search-provider all --dynamic all --bm25 all (8 combinations).",
+        help="Shorthand for --search-provider all --dynamic all --bm25 all --profile all.",
     )
     args = parser.parse_args()
 
@@ -229,7 +247,8 @@ def main():
     for i, v in enumerate(variants, 1):
         print(f"  {i}. search_provider={v['search_provider']} | "
               f"dynamic={v['use_dynamic_webpage_analysis']} | "
-              f"bm25={v['use_bm25_hints']}")
+              f"bm25={v['use_bm25_hints']} | "
+              f"profile={v['search_profile']}")
 
     # Load dataset
     dataset = []
@@ -255,8 +274,9 @@ def main():
                         sp  = rc.get("search_provider")
                         dyn = rc.get("use_dynamic_webpage_analysis")
                         bm  = rc.get("use_bm25_hints")
+                        prof = rc.get("search_profile", "default")
                         if p and m:
-                            existing_runs[(p, m, sp, dyn, bm)] += 1
+                            existing_runs[(p, m, sp, dyn, bm, prof)] += 1
                     except Exception:
                         pass
 
@@ -267,7 +287,7 @@ def main():
             print(
                 f"\n{'='*70}\n"
                 f"=== Variant {v_idx+1}/{len(variants)}: "
-                f"search_provider={vk[0]} | dynamic={vk[1]} | bm25={vk[2]} ===\n"
+                f"search_provider={vk[0]} | dynamic={vk[1]} | bm25={vk[2]} | profile={vk[3]} ===\n"
                 f"{'='*70}"
             )
             # Write temp config for this variant
@@ -277,7 +297,7 @@ def main():
                 query    = item.get("query")
                 criteria = item.get("criteria", [])
 
-                counter_key = (query, model_name, vk[0], vk[1], vk[2])
+                counter_key = (query, model_name, vk[0], vk[1], vk[2], vk[3])
                 runs_completed = existing_runs[counter_key]
 
                 if runs_completed >= args.runs:
@@ -343,6 +363,7 @@ def main():
                             "use_dynamic_webpage_analysis": variant["use_dynamic_webpage_analysis"],
                             "use_bm25_hints":               variant["use_bm25_hints"],
                             "search_provider":              variant["search_provider"],
+                            "search_profile":               variant["search_profile"],
                             "model":                        model_name,
                         },
                     }

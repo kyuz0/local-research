@@ -1,24 +1,65 @@
 api:
   openai_base_url: http://localhost:8080/v1
-  openai_api_key: ''
-  tavily_api_key: ''
 settings:
   use_dynamic_webpage_analysis: true
-  search_provider: duckduckgo  # Available options: "duckduckgo" (default, no API key required), "tavily" (requires TAVILY_API_KEY)
+  search_provider: duckduckgo
   use_bm25_hints: true
-quotas:
-  orchestrator:
-    delegate_research_task: 5
-    write_todos: 15
-    read_todos: 15
-    write_file: 8
-    read_file: 8
-  researcher:
-    web_search: 4
-    analyze_webpage: 5
-    think_tool: 12
-  url_analyzer:
-    read_full_page: 1
-    grep_page: 15
-    read_page_chunk: 10
-    think_tool: 10
+search_profile: default
+profiles:
+  shallow:
+    description: Fast and lightweight search, suitable for quick facts, expect 1-2
+      solid sources per claim.
+    quotas:
+      orchestrator:
+        delegate_research_task: 1
+        write_todos: 3
+        read_todos: 3
+        write_file: 3
+        read_file: 3
+      researcher:
+        web_search: 2
+        analyze_webpage: 3
+        think_tool: 5
+      url_analyzer:
+        read_full_page: 1
+        grep_page: 8
+        read_page_chunk: 5
+        think_tool: 3
+  default:
+    description: Balanced search with moderate depth, expect 2-3 solid sources per
+      claim.
+    quotas:
+      orchestrator:
+        delegate_research_task: 3
+        write_todos: 15
+        read_todos: 15
+        write_file: 7
+        read_file: 7
+      researcher:
+        web_search: 3
+        analyze_webpage: 7
+        think_tool: 10
+      url_analyzer:
+        read_full_page: 1
+        grep_page: 15
+        read_page_chunk: 10
+        think_tool: 8
+  deep:
+    description: Extensive research, slower but covers more sources. Expect 4+ solid
+      sources per claim, exploring multiple angles.
+    quotas:
+      orchestrator:
+        delegate_research_task: 8
+        write_todos: 30
+        read_todos: 30
+        write_file: 10
+        read_file: 10
+      researcher:
+        web_search: 6
+        analyze_webpage: 15
+        think_tool: 30
+      url_analyzer:
+        read_full_page: 1
+        grep_page: 50
+        read_page_chunk: 25
+        think_tool: 30

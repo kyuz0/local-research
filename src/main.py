@@ -173,6 +173,7 @@ def setup_agents(subagent_callback=None):
     webpage_tool = get_analyze_webpage_dynamic_tool(stream_callback=subagent_callback) if use_dynamic else analyze_webpage
 
     q = app_config.q
+    _, profile_description, _ = app_config.get_profile_info()
     q_res_search = q("researcher", "web_search")
     q_res_analyze = q("researcher", "analyze_webpage")
     q_res_think = q("researcher", "think_tool")
@@ -188,6 +189,7 @@ def setup_agents(subagent_callback=None):
             search_quota=q_res_search,
             analyze_quota=q_res_analyze,
             think_quota=q_res_think,
+            profile_description=profile_description,
         ),
         tools=[web_search, webpage_tool, think_tool],
         default_options={"temperature": 0.0},
@@ -226,6 +228,7 @@ def setup_agents(subagent_callback=None):
             orchestrator_quota=q_orch_delegate,
             orchestrator_todos_quota=q_orch_todos,
             orchestrator_files_quota=q_orch_files,
+            profile_description=profile_description,
         ),
         tools=[delegate_research_task, write_todos, write_file, read_todos, read_file],
         default_options={"temperature": 0.0},
@@ -313,36 +316,52 @@ class ConfigureScreen(ModalScreen[dict | None]):
                         yield Label("Enable:", classes="switch-label")
                         yield Switch(value=use_bm25, id="use_bm25")
                 
-                with TabPane("Orchestrator Quotas", id="tab-orch"):
-                    yield Label("delegate-research-task", classes="config-hint")
-                    yield Input(value=str(app_config.q("orchestrator", "delegate_research_task")), id="q_orch_delegate")
-                    yield Label("write_todos / read_todos", classes="config-hint")
-                    yield Input(value=str(app_config.q("orchestrator", "write_todos")), id="q_orch_todos")
-                    yield Label("write_file / read_file", classes="config-hint")
-                    yield Input(value=str(app_config.q("orchestrator", "write_file")), id="q_orch_files")
-                
-                with TabPane("Researcher Quotas", id="tab-res"):
-                    yield Label("web_search", classes="config-hint")
-                    yield Input(value=str(app_config.q("researcher", "web_search")), id="q_res_search")
-                    yield Label("analyze_webpage", classes="config-hint")
-                    yield Input(value=str(app_config.q("researcher", "analyze_webpage")), id="q_res_analyze")
-                    yield Label("think_tool", classes="config-hint")
-                    yield Input(value=str(app_config.q("researcher", "think_tool")), id="q_res_think")
-                
-                with TabPane("URL Analyzer Quotas", id="tab-url"):
-                    yield Label("read_full_page", classes="config-hint")
-                    yield Input(value=str(app_config.q("url_analyzer", "read_full_page")), id="q_url_readfull")
-                    yield Label("grep_page", classes="config-hint")
-                    yield Input(value=str(app_config.q("url_analyzer", "grep_page")), id="q_url_grep")
-                    yield Label("read_page_chunk", classes="config-hint")
-                    yield Input(value=str(app_config.q("url_analyzer", "read_page_chunk")), id="q_url_chunk")
-                    yield Label("think_tool", classes="config-hint")
-                    yield Input(value=str(app_config.q("url_analyzer", "think_tool")), id="q_url_think")
+                with TabPane("Search Profile", id="tab-profile"):
+                    profiles = app_config.cfg.get("profiles", {})
+                    profile_options = [(p, p) for p in profiles.keys()]
+                    current_profile = app_config.cfg.get("search_profile", "default")
+                    
+                    yield Label("Select Profile", classes="config-label")
+                    yield Select(profile_options, value=current_profile, id="search_profile_select")
+                    
+                    yield Label("Description", classes="config-label")
+                    yield Label("", id="profile_description", classes="config-hint")
+                    
+                    yield Label("Quotas Summary", classes="config-label")
+                    yield Label("", id="profile_summary", classes="config-hint")
             
             with Horizontal(id="config-buttons"):
                 yield Button("Save", variant="primary", id="save")
                 yield Button("Cancel", id="cancel")
                 
+    def on_mount(self) -> None:
+        self._update_profile_info(app_config.cfg.get("search_profile", "default"))
+
+    @on(Select.Changed, "#search_profile_select")
+    def on_profile_select_changed(self, event: Select.Changed) -> None:
+        self._update_profile_info(str(event.value))
+
+    def _update_profile_info(self, profile_name: str) -> None:
+        profiles = app_config.cfg.get("profiles", {})
+        profile = profiles.get(profile_name, profiles.get("default", {}))
+        
+        desc_label = self.query_one("#profile_description", Label)
+        summary_label = self.query_one("#profile_summary", Label)
+        
+        desc_label.update(profile.get("description", "No description provided."))
+        
+        quotas = profile.get("quotas", {})
+        orch = quotas.get("orchestrator", {})
+        res = quotas.get("researcher", {})
+        url = quotas.get("url_analyzer", {})
+        
+        summary = (
+            f"Orchestrator:  {orch.get('delegate_research_task', 0)} delegates, {orch.get('write_todos', 0)} todos, {orch.get('write_file', 0)} files\n"
+            f"Researcher:    {res.get('web_search', 0)} searches, {res.get('analyze_webpage', 0)} analyses, {res.get('think_tool', 0)} thoughts\n"
+            f"URL Analyzer:  {url.get('read_full_page', 0)} full reads, {url.get('grep_page', 0)} greps, {url.get('read_page_chunk', 0)} chunks, {url.get('think_tool', 0)} thoughts"
+        )
+        summary_label.update(summary)
+
     @on(Button.Pressed, "#save")
     def action_save(self) -> None:
         result = {
@@ -352,19 +371,7 @@ class ConfigureScreen(ModalScreen[dict | None]):
             "use_dynamic": str(self.query_one("#use_dynamic", Switch).value).lower(),
             "search_provider": self.query_one("#search_provider", Select).value,
             "use_bm25": str(self.query_one("#use_bm25", Switch).value).lower(),
-            # Orchestrator
-            "q_orch_delegate": self.query_one("#q_orch_delegate", Input).value.strip() or "3",
-            "q_orch_todos": self.query_one("#q_orch_todos", Input).value.strip() or "15",
-            "q_orch_files": self.query_one("#q_orch_files", Input).value.strip() or "5",
-            # Researcher
-            "q_res_search": self.query_one("#q_res_search", Input).value.strip() or "5",
-            "q_res_analyze": self.query_one("#q_res_analyze", Input).value.strip() or "7",
-            "q_res_think": self.query_one("#q_res_think", Input).value.strip() or "15",
-            # URL Analyzer
-            "q_url_readfull": self.query_one("#q_url_readfull", Input).value.strip() or "2",
-            "q_url_grep": self.query_one("#q_url_grep", Input).value.strip() or "10",
-            "q_url_chunk": self.query_one("#q_url_chunk", Input).value.strip() or "10",
-            "q_url_think": self.query_one("#q_url_think", Input).value.strip() or "8",
+            "search_profile": self.query_one("#search_profile_select", Select).value,
         }
         self.dismiss(result)
 
@@ -790,19 +797,8 @@ class DeepResearchApp(App):
                     app_config.cfg["settings"]["search_provider"] = result.get("search_provider", "duckduckgo")
                     app_config.cfg["settings"]["use_bm25_hints"] = result.get("use_bm25", "false") == "true"
                     
-                    # Update quotas in config
-                    app_config.cfg["quotas"]["orchestrator"]["delegate_research_task"] = int(result["q_orch_delegate"])
-                    app_config.cfg["quotas"]["orchestrator"]["write_todos"] = int(result["q_orch_todos"])
-                    app_config.cfg["quotas"]["orchestrator"]["read_todos"] = int(result["q_orch_todos"])
-                    app_config.cfg["quotas"]["orchestrator"]["write_file"] = int(result["q_orch_files"])
-                    app_config.cfg["quotas"]["orchestrator"]["read_file"] = int(result["q_orch_files"])
-                    app_config.cfg["quotas"]["researcher"]["web_search"] = int(result["q_res_search"])
-                    app_config.cfg["quotas"]["researcher"]["analyze_webpage"] = int(result["q_res_analyze"])
-                    app_config.cfg["quotas"]["researcher"]["think_tool"] = int(result["q_res_think"])
-                    app_config.cfg["quotas"]["url_analyzer"]["read_full_page"] = int(result["q_url_readfull"])
-                    app_config.cfg["quotas"]["url_analyzer"]["grep_page"] = int(result["q_url_grep"])
-                    app_config.cfg["quotas"]["url_analyzer"]["read_page_chunk"] = int(result["q_url_chunk"])
-                    app_config.cfg["quotas"]["url_analyzer"]["think_tool"] = int(result["q_url_think"])
+                    # Update search profile in config
+                    app_config.cfg["search_profile"] = result.get("search_profile", "default")
                     
                     # Also push API keys to env (for Tavily client etc.)
                     os.environ["OPENAI_API_BASE"] = result["api_base"]

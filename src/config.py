@@ -14,34 +14,39 @@ _active_config_path: str = _CONFIG_PATH  # may be overridden by load_config(path
 _DEFAULTS = {
     "api": {
         "openai_base_url": "http://localhost:8080/v1",
-        "openai_api_key": "",
-        "tavily_api_key": "",
     },
     "settings": {
         "use_dynamic_webpage_analysis": False,
         "search_provider": "duckduckgo",
         "use_bm25_hints": False,
     },
-    "quotas": {
-        "orchestrator": {
-            "delegate_research_task": 3,
-            "write_todos": 15,
-            "read_todos": 15,
-            "write_file": 5,
-            "read_file": 5,
+    "search_profile": "default",
+    "profiles": {
+        "shallow": {
+            "description": "Fast and lightweight search, suitable for quick facts. Expect 1-2 solid sources.",
+            "quotas": {
+                "orchestrator": {"delegate_research_task": 2, "write_todos": 10, "read_todos": 10, "write_file": 3, "read_file": 3},
+                "researcher": {"web_search": 2, "analyze_webpage": 3, "think_tool": 8},
+                "url_analyzer": {"read_full_page": 1, "grep_page": 5, "read_page_chunk": 5, "think_tool": 5}
+            }
         },
-        "researcher": {
-            "web_search": 5,
-            "analyze_webpage": 7,
-            "think_tool": 15,
+        "default": {
+            "description": "Balanced search with moderate depth. Expect 2-3 solid sources per claim.",
+            "quotas": {
+                "orchestrator": {"delegate_research_task": 3, "write_todos": 15, "read_todos": 15, "write_file": 5, "read_file": 5},
+                "researcher": {"web_search": 5, "analyze_webpage": 7, "think_tool": 15},
+                "url_analyzer": {"read_full_page": 2, "grep_page": 10, "read_page_chunk": 10, "think_tool": 8}
+            }
         },
-        "url_analyzer": {
-            "read_full_page": 2,
-            "grep_page": 10,
-            "read_page_chunk": 10,
-            "think_tool": 8,
-        },
-    },
+        "deep": {
+            "description": "Extensive research, slower but covers more sources. Expect 4+ solid sources per claim, exploring multiple angles.",
+            "quotas": {
+                "orchestrator": {"delegate_research_task": 8, "write_todos": 30, "read_todos": 30, "write_file": 10, "read_file": 10},
+                "researcher": {"web_search": 10, "analyze_webpage": 15, "think_tool": 25},
+                "url_analyzer": {"read_full_page": 4, "grep_page": 20, "read_page_chunk": 20, "think_tool": 15}
+            }
+        }
+    }
 }
 
 # The live config dict, mutated by load/save
@@ -91,10 +96,43 @@ def load_config(path: str | None = None) -> dict:
 
 def save_config() -> None:
     """Persist the current config dict to the active config file."""
+    # Create a copy to prevent mutating the live config and avoid saving secrets
+    save_data = copy.deepcopy(cfg)
+    
+    # Strip out sensitive API keys before writing
+    if "api" in save_data:
+        save_data["api"].pop("openai_api_key", None)
+        save_data["api"].pop("tavily_api_key", None)
+        
     with open(_active_config_path, "w") as f:
-        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(save_data, f, default_flow_style=False, sort_keys=False)
 
+
+def get_active_profile() -> dict:
+    """Retrieves the active profile configuration."""
+    profile_name = cfg.get("search_profile", "default")
+    profiles = cfg.get("profiles", {})
+    return profiles.get(profile_name, profiles.get("default", {}))
 
 def q(agent: str, tool: str) -> int:
     """Shorthand to get a quota value: q('researcher', 'web_search') -> 5."""
-    return int(cfg.get("quotas", {}).get(agent, {}).get(tool, 10))
+    profile = get_active_profile()
+    return int(profile.get("quotas", {}).get(agent, {}).get(tool, 10))
+
+def get_profile_info() -> tuple[str, str, str]:
+    """Returns (profile_name, description, summary_text)."""
+    profile_name = cfg.get("search_profile", "default")
+    profile = get_active_profile()
+    desc = profile.get("description", "No description provided.")
+    
+    quotas = profile.get("quotas", {})
+    orch = quotas.get("orchestrator", {})
+    res = quotas.get("researcher", {})
+    url = quotas.get("url_analyzer", {})
+    
+    summary = (
+        f"Orchestrator: {orch.get('delegate_research_task', 0)} delegates, {orch.get('write_todos', 0)} todos/reads, {orch.get('write_file', 0)} files\n"
+        f"Researcher: {res.get('web_search', 0)} searches, {res.get('analyze_webpage', 0)} analyses, {res.get('think_tool', 0)} thoughts\n"
+        f"URL Analyzer: {url.get('read_full_page', 0)} full reads, {url.get('grep_page', 0)} greps, {url.get('read_page_chunk', 0)} chunks, {url.get('think_tool', 0)} thoughts"
+    )
+    return profile_name, desc, summary

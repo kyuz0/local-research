@@ -55,7 +55,7 @@ This started from the [LangChain DeepAgents deep-research example](https://githu
 - **Pluggable search backends** — swap between DuckDuckGo (free) and Tavily without changing any code.
 - **Document support** — handle PDFs, DOCX, PPTX and other formats via `markitdown`, not just HTML.
 - **Per-run folders** — every search run saves its fetched pages and a full action trace (`session_log.json`) to a timestamped folder, making it easy to audit what the agent did and why.
-- **Quotas** — every tool has a configurable call limit per run. This is one of the most practically useful things I added: it prevents agents from looping or over-spending on a single step, and lets you tune the depth vs. speed tradeoff directly in `config.yaml`. Without quotas, agents tend to keep calling tools long past the point of diminishing returns.
+- **Search Profiles & Quotas** — you can switch between profiles (`shallow`, `default`, `deep`, or your own custom profiles) designed for different research depths. Every tool has a configurable call limit per run, and the orchestrator modifies its expectations based on the profile's configuration. This helps prevent agents from looping or over-spending on a single step, giving you complete control over the depth vs. speed tradeoff right from the UI or `config.yaml`.
 
 
 ## Architecture
@@ -83,7 +83,7 @@ Orchestrator
 | Sub-agent delegation | Each agent has its own scoped context; the orchestrator never sees raw search results |
 | grep-based page reading | Much smaller context at the cost of potentially missing implicit matches |
 | BM25 line hints | Pre-scores page lines before the LLM reads anything; negligible overhead |
-| Per-tool quotas | Prevents loops and over-spending; tune depth vs. speed in `config.yaml` |
+| Search Profiles & Quotas | Tune depth vs. speed with configurable limits per profile in `config.yaml` |
 | Local-first | No OpenAI key needed; any OpenAI-compatible server works |
 | DuckDuckGo default | Free, no API key; Tavily available for better snippet quality |
 | PDF / document support | `markitdown` handles PDFs, DOCX, PPTX alongside HTML |
@@ -129,15 +129,21 @@ settings:
   use_dynamic_webpage_analysis: true
   use_bm25_hints: true
 
-quotas:          # limit tool calls per run to control cost / context size
-  orchestrator:
-    delegate_research_task: 5
-  researcher:
-    web_search: 4
-    analyze_webpage: 5
-  url_analyzer:
-    grep_page: 15
-    read_page_chunk: 10
+search_profile: default   # choose between shallow, default, deep, or custom profiles
+
+profiles:                 # limit tool calls per run to control cost / context size
+  default:
+    description: "Balanced search with moderate depth, expect 2-3 solid sources per claim."
+    quotas:
+      orchestrator:
+        delegate_research_task: 3
+      researcher:
+        web_search: 5
+        analyze_webpage: 7
+      url_analyzer:
+        read_full_page: 1
+        grep_page: 15
+        read_page_chunk: 10
 ```
 
 ---
@@ -165,11 +171,11 @@ The evaluator runs the agent against a JSONL dataset of questions with weighted 
 # Run with default config
 python eval/evaluate.py --limit 5 --runs 1
 
-# Compare all variant combinations (2 providers × 2 dynamic × 2 bm25 = 8 runs per question)
+# Compare all variant combinations (2 providers × 2 dynamic × 2 bm25 × 3 profiles = 24 runs per question)
 python eval/evaluate.py --all-variants --limit 5 --runs 1
 
 # Override individual settings
-python eval/evaluate.py --search-provider tavily --dynamic true --bm25 false
+python eval/evaluate.py --search-provider tavily --dynamic true --bm25 false --profile deep
 ```
 
 Results are appended to `eval/results.jsonl` with full config metadata, so you can compare variants side-by-side.
