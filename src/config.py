@@ -9,6 +9,7 @@ import yaml
 import copy
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+_active_config_path: str = _CONFIG_PATH  # may be overridden by load_config(path=...)
 
 _DEFAULTS = {
     "api": {
@@ -19,6 +20,7 @@ _DEFAULTS = {
     "settings": {
         "use_dynamic_webpage_analysis": False,
         "search_provider": "duckduckgo",
+        "use_bm25_hints": False,
     },
     "quotas": {
         "orchestrator": {
@@ -57,12 +59,22 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return result
 
 
-def load_config() -> dict:
-    """Load config from YAML file, falling back to defaults for missing keys."""
-    global cfg
+def load_config(path: str | None = None) -> dict:
+    """Load config from YAML file, falling back to defaults for missing keys.
+
+    Args:
+        path: Optional path to an alternative config YAML file.  When given,
+              this path is also used by :func:`save_config` so reads and writes
+              stay in sync.  Defaults to the built-in ``src/config.yaml``.
+    """
+    global cfg, _active_config_path
+    if path is not None:
+        _active_config_path = os.path.abspath(path)
+    else:
+        _active_config_path = _CONFIG_PATH
     file_cfg = {}
-    if os.path.exists(_CONFIG_PATH):
-        with open(_CONFIG_PATH, "r") as f:
+    if os.path.exists(_active_config_path):
+        with open(_active_config_path, "r") as f:
             file_cfg = yaml.safe_load(f) or {}
     cfg = _deep_merge(_DEFAULTS, file_cfg)
 
@@ -78,8 +90,8 @@ def load_config() -> dict:
 
 
 def save_config() -> None:
-    """Persist the current config dict to config.yaml."""
-    with open(_CONFIG_PATH, "w") as f:
+    """Persist the current config dict to the active config file."""
+    with open(_active_config_path, "w") as f:
         yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
 

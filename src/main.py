@@ -31,6 +31,8 @@ from tools import web_search, analyze_webpage, get_analyze_webpage_dynamic_tool,
 import config as app_config
 
 load_dotenv(override=True)
+# load_config() is called in __main__ after --config is parsed; also called
+# here as a fallback so imports that happen at module level still work.
 app_config.load_config()
 
 _session_events = []
@@ -188,6 +190,7 @@ def setup_agents(subagent_callback=None):
             think_quota=q_res_think,
         ),
         tools=[web_search, webpage_tool, think_tool],
+        default_options={"temperature": 0.0},
     )
 
     from agent_framework import tool
@@ -225,6 +228,7 @@ def setup_agents(subagent_callback=None):
             orchestrator_files_quota=q_orch_files,
         ),
         tools=[delegate_research_task, write_todos, write_file, read_todos, read_file],
+        default_options={"temperature": 0.0},
     )
     
     return client, orchestrator
@@ -301,6 +305,13 @@ class ConfigureScreen(ModalScreen[dict | None]):
                         value=current_provider,
                         id="search_provider"
                     )
+
+                    use_bm25 = app_config.cfg.get("settings", {}).get("use_bm25_hints", False)
+                    yield Label("BM25 Line Hints", classes="config-label")
+                    yield Label("Pre-score page lines with BM25 to guide the URL analyzer (requires rank-bm25).", classes="config-hint")
+                    with Horizontal(classes="switch-container"):
+                        yield Label("Enable:", classes="switch-label")
+                        yield Switch(value=use_bm25, id="use_bm25")
                 
                 with TabPane("Orchestrator Quotas", id="tab-orch"):
                     yield Label("delegate-research-task", classes="config-hint")
@@ -340,6 +351,7 @@ class ConfigureScreen(ModalScreen[dict | None]):
             "tavily_key": self.query_one("#tavily_key", Input).value.strip(),
             "use_dynamic": str(self.query_one("#use_dynamic", Switch).value).lower(),
             "search_provider": self.query_one("#search_provider", Select).value,
+            "use_bm25": str(self.query_one("#use_bm25", Switch).value).lower(),
             # Orchestrator
             "q_orch_delegate": self.query_one("#q_orch_delegate", Input).value.strip() or "3",
             "q_orch_todos": self.query_one("#q_orch_todos", Input).value.strip() or "15",
@@ -463,10 +475,27 @@ class ToolCallWidget(Collapsible):
         self.title = f"\N{HAMMER AND WRENCH} \\[{self.agent_name}] {self.tool_name} \N{OCTAGONAL SIGN} ({elapsed.total_seconds():.1f}s)"
 
 
+# ASCII art banner shown at startup
+_BANNER = r"""
+██╗      ██████╗  ██████╗ █████╗ ██╗                            
+██║     ██╔═══██╗██╔════╝██╔══██╗██║                            
+██║     ██║   ██║██║     ███████║██║                            
+██║     ██║   ██║██║     ██╔══██║██║                            
+███████╗╚██████╔╝╚██████╗██║  ██║███████╗                       
+╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝                       
+                                                                
+██████╗ ███████╗███████╗███████╗ █████╗ ██████╗  ██████╗██╗  ██╗
+██╔══██╗██╔════╝██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝██║  ██║
+██████╔╝█████╗  ███████╗█████╗  ███████║██████╔╝██║     ███████║
+██╔══██╗██╔══╝  ╚════██║██╔══╝  ██╔══██║██╔══██╗██║     ██╔══██║
+██║  ██║███████╗███████║███████╗██║  ██║██║  ██║╚██████╗██║  ██║
+╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
+                                                                """
+
 class DeepResearchApp(App):
-    """Modern TUI for the Deep Research Agent."""
-    
-    TITLE = "🕵️ DeepResearch CLI"
+    """LocalResearch — agent-driven search for local LLMs."""
+
+    TITLE = "🔍 LocalResearch"
     
     CSS = """
     #chat-container {
@@ -523,6 +552,15 @@ class DeepResearchApp(App):
     #prompt-input {
         margin: 1 0;
     }
+    .banner {
+        color: $success;
+        text-style: bold;
+        padding: 1 2 0 2;
+    }
+    .banner-sub {
+        color: $text-muted;
+        padding: 0 2 1 2;
+    }
     """
 
     BINDINGS = [
@@ -546,51 +584,50 @@ class DeepResearchApp(App):
         self._cmd_index: int = 0
         self._file_picker_active: bool = False
         self._file_picker_files: list[str] = []
+        self._is_searching: bool = False
         # State tracking for streams
         self.orchestrator_state = {"calls": {}, "current_call_id": None, "current_msg": None}
         self.subagent_state = {"calls": {}, "current_call_id": None, "current_msg": None}
 
+    def _banner_widget(self) -> Static:
+        """Build the startup banner with current config status."""
+        cfg = app_config.cfg
+        provider   = cfg.get("settings", {}).get("search_provider", "duckduckgo")
+        dynamic    = cfg.get("settings", {}).get("use_dynamic_webpage_analysis", False)
+        bm25       = cfg.get("settings", {}).get("use_bm25_hints", False)
+        base_url   = cfg.get("api", {}).get("openai_base_url", "")
+        lines = [
+            _BANNER,
+            "",
+            "  Agent-driven search • optimized for local LLMs",
+            "",
+            f"  ✓ search provider : {provider}",
+            f"  ✓ dynamic analysis: {'on' if dynamic else 'off'}   "
+            f"  bm25 hints: {'on' if bm25 else 'off'}",
+            f"  ✓ LLM endpoint    : {base_url}",
+            "",
+            "  Ready! Type a query or /help for commands.",
+        ]
+        return Static("\n".join(lines), classes="banner", id="banner")
+
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="chat-container"):
-            yield Static("Welcome to DeepResearch CLI. Enter your query below.", classes="agent-message")
+            yield self._banner_widget()
         with Vertical(id="bottom-bar"):
             yield OptionList(id="command-list")
             yield Input(
-                placeholder="Send a message... (Press Enter to submit)", 
+                placeholder="Enter a research query... (or /help)",
                 id="prompt-input"
             )
         yield Footer()
 
-    async def _generate_run_title(self, query: str) -> str:
-        """Ask the LLM to generate a short, filesystem-safe title from the query."""
+    def _generate_run_title(self, query: str) -> str:
+        """Generate a short, filesystem-safe title from the query without any LLM call."""
         import re as _re
-        try:
-            client = OpenAIChatClient(
-                base_url=app_config.cfg["api"]["openai_base_url"] or "http://localhost:8080/v1",
-                api_key=app_config.cfg["api"]["openai_api_key"] or "dummy",
-                model_id="local-model",
-            )
-            agent = client.as_agent(
-                name="title_gen",
-                instructions=(
-                    "Generate a very short filename-safe title (3-5 words, lowercase, "
-                    "separated by hyphens) that a human would immediately associate with "
-                    "the given research query. Output ONLY the title, nothing else. "
-                    "Example: 'best-italian-restaurants-nyc' or 'quantum-computing-overview'"
-                ),
-            )
-            response = await agent.run(query)
-            title = response.text.strip().strip('"').strip("'").lower()
-            # Sanitize: keep only alphanumerics and hyphens
-            title = _re.sub(r'[^a-z0-9\-]', '-', title)
-            title = _re.sub(r'-+', '-', title).strip('-')
-            return title[:60] if title else "research"
-        except Exception:
-            # Fallback: sanitize the query itself
-            fallback = _re.sub(r'[^a-z0-9\-]', '-', query[:40].lower())
-            fallback = _re.sub(r'-+', '-', fallback).strip('-')
-            return fallback or "research"
+        title = _re.sub(r'[^a-z0-9\-]', '-', query[:60].lower().replace(' ', '-'))
+        title = _re.sub(r'-+', '-', title).strip('-')
+        return title[:60] if title else "research"
 
     def _initialize_agents(self) -> None:
         async def researcher_stream_callback_tui(update: AgentResponseUpdate):
@@ -728,7 +765,7 @@ class DeepResearchApp(App):
         
         if query.lower() == "/new":
             await chat_container.remove_children()
-            await chat_container.mount(Static("Welcome to DeepResearch CLI. Enter your query below.", classes="agent-message"))
+            await chat_container.mount(self._banner_widget())
             self.on_mount()
             return
             
@@ -751,6 +788,7 @@ class DeepResearchApp(App):
                     app_config.cfg["api"]["tavily_api_key"] = result["tavily_key"]
                     app_config.cfg["settings"]["use_dynamic_webpage_analysis"] = result["use_dynamic"] == "true"
                     app_config.cfg["settings"]["search_provider"] = result.get("search_provider", "duckduckgo")
+                    app_config.cfg["settings"]["use_bm25_hints"] = result.get("use_bm25", "false") == "true"
                     
                     # Update quotas in config
                     app_config.cfg["quotas"]["orchestrator"]["delegate_research_task"] = int(result["q_orch_delegate"])
@@ -797,10 +835,19 @@ class DeepResearchApp(App):
             
         await chat_container.mount(UserMessage(query))
         chat_container.scroll_end(animate=False)
+
+        if self._is_searching:
+            await chat_container.mount(AgentMessage(
+                "System",
+                "⚠️  A search is already in progress. "
+                "Use [bold]/stop[/bold] to cancel it first, or wait for it to finish."
+            ))
+            chat_container.scroll_end(animate=False)
+            return
         
         # Generate a human-readable run folder name: timestamp-query-title
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        query_title = await self._generate_run_title(query)
+        query_title = self._generate_run_title(query)
         run_dir = os.path.join("runs", f"{timestamp}-{query_title}")
         os.makedirs(run_dir, exist_ok=True)
         os.environ["CURRENT_RUN_DIR"] = run_dir
@@ -811,6 +858,7 @@ class DeepResearchApp(App):
         self.subagent_state = {"calls": {}, "current_call_id": None, "current_msg": None}
 
         # Run the orchestrator in an async worker
+        self._is_searching = True
         self.run_orchestrator(query)
 
     @work(exclusive=True)
@@ -834,17 +882,21 @@ class DeepResearchApp(App):
         chat_container.scroll_end(animate=False)
         
         try:
-            first_update = True
+            first_content = True
             stream = self.orchestrator.run(query, stream=True)
+            await asyncio.sleep(0.1)
             async for update in stream:
-                if first_update:
-                    processing_widget.stop()
-                    first_update = False
+                if first_content:
+                    for c in update.contents:
+                        if (c.type == "text" and c.text) or c.type == "function_call":
+                            processing_widget.stop()
+                            first_content = False
+                            break
                 # the generator is async and runs in the Textual event loop 
                 # we can update the UI directly since we are on the main thread
                 self.handle_agent_update(update, False)
             
-            if first_update:
+            if first_content:
                 processing_widget.stop()
             
             elapsed = datetime.now() - start_time
@@ -854,6 +906,7 @@ class DeepResearchApp(App):
         except Exception as e:
             self.log_error(str(e))
         finally:
+            self._is_searching = False
             tool_quotas_ctx.reset(token)
 
     def handle_agent_update(self, update: AgentResponseUpdate, is_subagent: bool = False):
@@ -962,9 +1015,19 @@ async def run_cli(prompt: str) -> None:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="DeepResearch Agent CLI / TUI")
-    parser.add_argument("--prompt", type=str, help="Run non-interactively with a specific prompt", default=None)
+    parser.add_argument("--prompt", "-p", type=str, help="Run non-interactively with a specific prompt", default=None)
+    parser.add_argument(
+        "--config", "-c",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to an alternative config YAML file (default: src/config.yaml)",
+    )
     args, unknown = parser.parse_known_args()
-    
+
+    # Re-load config now that we know the path (overrides the module-level load)
+    app_config.load_config(path=args.config)
+
     if args.prompt:
         import re
         run_name = re.sub(r'[^a-z0-9\-]', '', args.prompt[:40].lower().replace(" ", "-"))

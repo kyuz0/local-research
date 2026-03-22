@@ -5,5 +5,6 @@ httpx
 markdownify
 agent-framework
 textual
-markitdown
+markitdown[all]
 ddgs
+rank-bm25

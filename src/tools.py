@@ -3,6 +3,7 @@ import re
 import httpx
 import hashlib
 import asyncio
+from rank_bm25 import BM25Okapi as _BM25Okapi
 from datetime import datetime
 from urllib.parse import urlparse
 from agent_framework import tool
@@ -76,6 +77,11 @@ def fetch_webpage_content(url: str, timeout: float = 10.0) -> str:
     try:
         response = httpx.get(url, headers=headers, timeout=timeout)
         response.raise_for_status()
+        
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" not in content_type and "text/plain" not in content_type:
+            return f"Error: Fetched content is not text/html (Content-Type: {content_type}). Note: MarkItDown may have failed to parse this non-HTML file."
+            
         return markdownify(response.text)
     except Exception as e:
         return f"Error fetching content from {url}: {str(e)}"
@@ -132,7 +138,8 @@ def web_search(
         provider = app_config.cfg.get("settings", {}).get("search_provider", "duckduckgo")
         result_texts = []
 
-        if provider == "duckduckgo":
+        if provider == "duckduckgo" or provider not in ("duckduckgo", "tavily"):
+            # Default/fallback: DuckDuckGo (free, no API key required)
             if topic == "news":
                 search_results = DDGS().news(query, max_results=max_results)
                 for result in search_results:
@@ -147,8 +154,8 @@ def web_search(
                     title = result.get("title", "")
                     snippet = _sanitize_snippet(result.get("body", "No snippet available"))
                     result_texts.append(f"## {title}\n**URL:** {url}\n**Snippet:** {snippet}\n")
-        else:
-            # Use Tavily to discover URLs
+        elif provider == "tavily":
+            # Tavily: requires TAVILY_API_KEY to be set
             search_results = get_tavily_client().search(
                 query,
                 max_results=max_results,
@@ -195,7 +202,8 @@ async def analyze_webpage(
         name="url_analyzer",
         instructions=URL_ANALYZER_INSTRUCTIONS.format(
             date=datetime.now().strftime("%Y-%m-%d"),
-        )
+        ),
+        default_options={"temperature": 0.0},
     )
     
     prompt = f"Upstream query: {upstream_query}\nSpecific query: {specific_query}\nURL: {url}\nPage Content:\n\n{content}\n"
@@ -227,6 +235,49 @@ def _save_page_to_run_dir(url: str, content: str) -> None:
             f.write(metadata + content)
     except Exception:
         pass
+
+
+def _bm25_hint_lines(lines: list[str], query: str, top_n: int = 5, context: int = 4) -> str:
+    """Return a formatted hint string with the top-N BM25-scored line numbers.
+
+    Scores each line against the query tokens using BM25Okapi, then groups
+    nearby hits into contiguous ranges and returns a one-line summary the
+    url_analyzer prompt can include.
+
+    Returns an empty string if rank_bm25 is not installed or no hits found.
+    """
+    if not lines:
+        return ""
+
+    tokenized = [re.findall(r'\w+', line.lower()) for line in lines]
+    # BM25 needs non-empty rows; replace empty rows with a sentinel
+    tokenized = [toks if toks else ["__empty__"] for toks in tokenized]
+    bm25 = _BM25Okapi(tokenized)
+    query_tokens = re.findall(r'\w+', query.lower())
+    if not query_tokens:
+        return ""
+
+    scores = bm25.get_scores(query_tokens)
+    # Pick top_n lines by score (1-indexed)
+    top_indices = sorted(
+        range(len(scores)), key=lambda i: scores[i], reverse=True
+    )[:top_n]
+    top_indices = [i for i in top_indices if scores[i] > 0]
+    if not top_indices:
+        return ""
+
+    # Expand each hit by context lines and merge overlapping ranges
+    ranges: list[tuple[int, int]] = []
+    for idx in sorted(top_indices):
+        lo = max(0, idx - context) + 1          # convert to 1-indexed
+        hi = min(len(lines) - 1, idx + context) + 1
+        if ranges and lo <= ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], hi))
+        else:
+            ranges.append((lo, hi))
+
+    hint_parts = ", ".join(f"lines {lo}-{hi}" for lo, hi in ranges)
+    return f"**BM25 relevance hints** — focus first on: {hint_parts}"
 
 
 def _build_url_analyzer_quotas() -> dict:
@@ -349,9 +400,14 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
                 read_page_chunk_quota=app_config.q("url_analyzer", "read_page_chunk"),
                 think_quota=app_config.q("url_analyzer", "think_tool"),
             ),
-            tools=[read_full_page, grep_page, read_page_chunk, think_tool]
+            tools=[read_full_page, grep_page, read_page_chunk, think_tool],
+            default_options={"temperature": 0.0},
         )
         
+        bm25_hint = ""
+        if app_config.cfg.get("settings", {}).get("use_bm25_hints", False):
+            bm25_hint = _bm25_hint_lines(lines, specific_query)
+
         prompt = (
             f"Upstream query: {upstream_query}\n"
             f"Specific query: {specific_query}\n"
@@ -360,7 +416,9 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
             f"- Total characters: {len(content)}\n"
             f"- Total lines: {len(lines)}\n"
         )
-        
+        if bm25_hint:
+            prompt += f"\n{bm25_hint}\n"
+
         return await _run_agent_with_quotas(
             agent, prompt, _build_url_analyzer_quotas(), stream_callback
         )

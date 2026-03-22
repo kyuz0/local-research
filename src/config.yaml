@@ -1,22 +1,18 @@
-# DeepResearch Agent Configuration
-
 api:
-  openai_base_url: "http://localhost:8080/v1"
-  openai_api_key: ""
-  tavily_api_key: ""
-
+  openai_base_url: http://localhost:8080/v1
+  openai_api_key: ''
+  tavily_api_key: ''
 settings:
   use_dynamic_webpage_analysis: true
-  search_provider: "duckduckgo"
-
-# Per-tool quotas (per invocation of the agent)
+  search_provider: duckduckgo  # Available options: "duckduckgo" (default, no API key required), "tavily" (requires TAVILY_API_KEY)
+  use_bm25_hints: true
 quotas:
   orchestrator:
     delegate_research_task: 5
-    write_todos: 10
-    read_todos: 25
-    write_file: 5
-    read_file: 5
+    write_todos: 15
+    read_todos: 15
+    write_file: 8
+    read_file: 8
   researcher:
     web_search: 4
     analyze_webpage: 5
