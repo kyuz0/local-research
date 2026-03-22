@@ -96,9 +96,6 @@ Orchestrator
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy and edit config
-cp src/config.yaml src/config.yaml   # already present, just edit it
-
 # Run the TUI
 python src/main.py
 
