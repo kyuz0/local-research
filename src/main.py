@@ -178,9 +178,14 @@ def setup_agents(subagent_callback=None):
     q_res_search = q("researcher", "web_search")
     q_res_analyze = q("researcher", "analyze_webpage")
     q_res_think = q("researcher", "think_tool")
+    q_res_max_tokens = int(q("researcher", "max_tokens") or 5000)
+    res_word_limit = int(q_res_max_tokens * 0.6)
+
     q_orch_delegate = q("orchestrator", "delegate_research_task")
     q_orch_todos = q("orchestrator", "write_todos")
     q_orch_files = q("orchestrator", "write_file")
+    q_orch_max_tokens = int(q("orchestrator", "max_tokens") or 5000)
+    orch_word_limit = int(q_orch_max_tokens * 0.6)
 
     research_agent = client.as_agent(
         name="research_agent",
@@ -191,9 +196,10 @@ def setup_agents(subagent_callback=None):
             analyze_quota=q_res_analyze,
             think_quota=q_res_think,
             profile_description=profile_description,
+            word_limit=res_word_limit,
         ),
         tools=[web_search, webpage_tool, think_tool],
-        default_options={"temperature": 0.0},
+        default_options={"temperature": 0.0, "max_tokens": q_res_max_tokens},
     )
 
     from agent_framework import tool
@@ -230,9 +236,10 @@ def setup_agents(subagent_callback=None):
             orchestrator_todos_quota=q_orch_todos,
             orchestrator_files_quota=q_orch_files,
             profile_description=profile_description,
+            word_limit=orch_word_limit,
         ),
         tools=[delegate_research_task, write_todos, write_file, read_todos, read_file],
-        default_options={"temperature": 0.0},
+        default_options={"temperature": 0.0, "max_tokens": q_orch_max_tokens},
     )
     
     return client, orchestrator

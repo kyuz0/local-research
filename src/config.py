@@ -26,25 +26,25 @@ _DEFAULTS = {
         "shallow": {
             "description": "Fast and lightweight search, suitable for quick facts. Expect 1-2 solid sources.",
             "quotas": {
-                "orchestrator": {"delegate_research_task": 2, "write_todos": 10, "read_todos": 10, "write_file": 3, "read_file": 3},
-                "researcher": {"web_search": 2, "analyze_webpage": 3, "think_tool": 8},
-                "url_analyzer": {"read_full_page": 1, "grep_page": 5, "read_page_chunk": 5, "think_tool": 5}
+                "orchestrator": {"delegate_research_task": 2, "write_todos": 10, "read_todos": 10, "write_file": 3, "read_file": 3, "max_tokens": 5000},
+                "researcher": {"web_search": 2, "analyze_webpage": 3, "think_tool": 8, "max_tokens": 5000},
+                "url_analyzer": {"read_full_page": 1, "grep_page": 5, "read_page_chunk": 5, "think_tool": 5, "max_tokens": 5000, "max_chunk_lines": 150, "max_grep_matches": 10, "max_static_chars": 30000}
             }
         },
         "default": {
             "description": "Balanced search with moderate depth. Expect 2-3 solid sources per claim.",
             "quotas": {
-                "orchestrator": {"delegate_research_task": 3, "write_todos": 15, "read_todos": 15, "write_file": 5, "read_file": 5},
-                "researcher": {"web_search": 5, "analyze_webpage": 7, "think_tool": 15},
-                "url_analyzer": {"read_full_page": 2, "grep_page": 10, "read_page_chunk": 10, "think_tool": 8}
+                "orchestrator": {"delegate_research_task": 3, "write_todos": 15, "read_todos": 15, "write_file": 5, "read_file": 5, "max_tokens": 5000},
+                "researcher": {"web_search": 5, "analyze_webpage": 7, "think_tool": 15, "max_tokens": 5000},
+                "url_analyzer": {"read_full_page": 2, "grep_page": 10, "read_page_chunk": 10, "think_tool": 8, "max_tokens": 5000, "max_chunk_lines": 150, "max_grep_matches": 10, "max_static_chars": 30000}
             }
         },
         "deep": {
             "description": "Extensive research, slower but covers more sources. Expect 4+ solid sources per claim, exploring multiple angles.",
             "quotas": {
-                "orchestrator": {"delegate_research_task": 8, "write_todos": 30, "read_todos": 30, "write_file": 10, "read_file": 10},
-                "researcher": {"web_search": 10, "analyze_webpage": 15, "think_tool": 25},
-                "url_analyzer": {"read_full_page": 4, "grep_page": 20, "read_page_chunk": 20, "think_tool": 15}
+                "orchestrator": {"delegate_research_task": 8, "write_todos": 30, "read_todos": 30, "write_file": 10, "read_file": 10, "max_tokens": 5000},
+                "researcher": {"web_search": 10, "analyze_webpage": 15, "think_tool": 25, "max_tokens": 5000},
+                "url_analyzer": {"read_full_page": 4, "grep_page": 20, "read_page_chunk": 20, "think_tool": 15, "max_tokens": 5000, "max_chunk_lines": 150, "max_grep_matches": 10, "max_static_chars": 30000}
             }
         }
     }

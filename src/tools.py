@@ -101,7 +101,7 @@ def _create_llm_client() -> OpenAIChatClient:
 
 
 @tool(approval_mode="never_require")
-def web_search(
+async def web_search(
     query: str,
     max_results: int = 5,
     topic: str = "general",
@@ -122,7 +122,7 @@ def web_search(
     if quota_error:
         return quota_error
         
-    try:
+    def _do_search():
         def _sanitize_snippet(text: str) -> str:
             """Strip CSS, SVG, and HTML artifacts from search snippets."""
             # Remove SVG tags and their contents
@@ -174,6 +174,9 @@ def web_search(
 
         # Format final response
         return f"🔍 Found {len(result_texts)} result(s) for '{query}':\n\n{chr(10).join(result_texts)}"
+        
+    try:
+        return await asyncio.to_thread(_do_search)
     except Exception as e:
         return f"Search failed: {str(e)}"
 
@@ -199,16 +202,24 @@ async def analyze_webpage(
         return quota_error
 
     try:
-        content = fetch_webpage_content(url)
+        content = await asyncio.to_thread(fetch_webpage_content, url)
         
+        max_chars = app_config.q("url_analyzer", "max_static_chars")
+        if max_chars and len(content) > max_chars:
+            content = content[:max_chars] + f"\n\n[Note: Content truncated after {max_chars} characters due to profile limits.]"
+
         client = _create_llm_client()
         
+        max_tokens = app_config.q("url_analyzer", "max_tokens")
+        word_limit = int(max_tokens * 0.6) if max_tokens else 3000
+
         agent = client.as_agent(
             name="url_analyzer",
             instructions=URL_ANALYZER_INSTRUCTIONS.format(
                 date=datetime.now().strftime("%Y-%m-%d"),
+                word_limit=word_limit,
             ),
-            default_options={"temperature": 0.0},
+            default_options={"temperature": 0.0, "max_tokens": max_tokens} if max_tokens else {"temperature": 0.0},
         )
         
         prompt = f"Upstream query: {upstream_query}\nSpecific query: {specific_query}\nURL: {url}\nPage Content:\n\n{content}\n"
@@ -342,8 +353,10 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
         quota_error = check_quota("analyze_webpage")
         if quota_error:
             return quota_error
-        content = fetch_webpage_content(url)
-        _save_page_to_run_dir(url, content)
+        
+        content = await asyncio.to_thread(fetch_webpage_content, url)
+        
+        await asyncio.to_thread(_save_page_to_run_dir, url, content)
         lines = content.split('\n')
         
         @tool(approval_mode="never_require")
@@ -354,7 +367,7 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
             return content
             
         @tool(approval_mode="never_require")
-        def grep_page(pattern: str, context_lines: int = 2) -> str:
+        def grep_page(pattern: str, context_lines: int = 5) -> str:
             """Search for a regex pattern across the page lines and return matching lines with context.
             
             Args:
@@ -371,8 +384,15 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
 
             try:
                 results = []
+                match_count = 0
+                max_matches = app_config.q("url_analyzer", "max_grep_matches")
+                
                 for i, line in enumerate(lines):
                     if regex.search(line):
+                        match_count += 1
+                        if max_matches and match_count > max_matches:
+                            continue
+                            
                         start = max(0, i - context_lines)
                         end = min(len(lines), i + context_lines + 1)
                         chunk = []
@@ -381,15 +401,21 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
                         results.append("\n".join(chunk))
                         results.append("-" * 40)
                 
-                if not results:
+                if match_count == 0:
                     return f"Pattern '{pattern}' not found."
-                return "\n".join(results)
+                    
+                header = ""
+                if max_matches and match_count > max_matches:
+                    header = f"[Note: Found {match_count} matches. Returning the first {max_matches} matches to prevent context overflow. Be more specific if you didn't find what you need.]\n\n"
+                    
+                return header + "\n".join(results)
             except Exception as e:
                 return f"Error executing grep search with pattern '{pattern}': {str(e)}"
             
         @tool(approval_mode="never_require")
         def read_page_chunk(start_line: int, end_line: int) -> str:
             """Read a specific chunk of the page from start_line to end_line (1-indexed).
+            Note: To prevent context flooding, the number of lines read in a single call is strictly hard-capped.
             
             Args:
                 start_line: The starting line number (1-indexed)
@@ -400,8 +426,19 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
             
             try:
                 start = max(0, start_line - 1)
-                end = min(len(lines), end_line)
+                end_original = min(len(lines), end_line)
+                max_lines = app_config.q("url_analyzer", "max_chunk_lines")
+                
+                capped = False
+                end = end_original
+                if max_lines and (end - start > max_lines):
+                    end = start + max_lines
+                    capped = True
+                    
                 chunk = []
+                if capped:
+                    chunk.append(f"[Note: Requested chunk was too large. Output was capped at {max_lines} lines to prevent context overflow.]\n")
+                    
                 for i in range(start, end):
                     chunk.append(f"{i + 1}: {lines[i]}")
                 return "\n".join(chunk)
@@ -410,6 +447,9 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
 
         client = _create_llm_client()
         
+        max_tokens = app_config.q("url_analyzer", "max_tokens")
+        word_limit = int(max_tokens * 0.6) if max_tokens else 3000
+
         agent = client.as_agent(
             name="url_analyzer",
             instructions=DYNAMIC_URL_ANALYZER_INSTRUCTIONS.format(
@@ -418,14 +458,15 @@ def get_analyze_webpage_dynamic_tool(stream_callback=None):
                 grep_page_quota=app_config.q("url_analyzer", "grep_page"),
                 read_page_chunk_quota=app_config.q("url_analyzer", "read_page_chunk"),
                 think_quota=app_config.q("url_analyzer", "think_tool"),
+                word_limit=word_limit,
             ),
             tools=[read_full_page, grep_page, read_page_chunk, think_tool],
-            default_options={"temperature": 0.0},
+            default_options={"temperature": 0.0, "max_tokens": max_tokens} if max_tokens else {"temperature": 0.0},
         )
         
         bm25_hint = ""
         if app_config.cfg.get("settings", {}).get("use_bm25_hints", False):
-            bm25_hint = _bm25_hint_lines(lines, specific_query)
+            bm25_hint = await asyncio.to_thread(_bm25_hint_lines, lines, specific_query)
 
         prompt = (
             f"Upstream query: {upstream_query}\n"

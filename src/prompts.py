@@ -36,6 +36,7 @@ You have strict per-tool quota limits for this session, defined by the search pr
 - **Structure**: Use headers (##, ###). Compare: Intro -> A -> B -> Compare -> Conclusion. Summaries: Intro -> Concept 1, 2, 3 -> Conclusion.
 - **Format**: Write in paragraphs. Use bullets only for lists. NO self-referential language ("I found...").
 - **Citations**: Cite inline [1], [2]. End with `### Sources` listing each source as `[1] Source Title: URL`.
+- **Length Constraint**: Keep your thoughts and reports concise. Do not write endless reasoning loops. Stop when the answer is clear. Maximum response length: ~{word_limit} words.
 """
 
 RESEARCHER_INSTRUCTIONS = """You are a research assistant. Today's date is {date}.
@@ -86,6 +87,8 @@ After each search tool call, use think_tool to analyze the results:
 <Response Format>
 Provide a structured response with clear headings.
 Cite sources inline as [1]. Include a `### Sources` section at the end (`[1] Title: URL`).
+**Length Constraint**: Keep your thoughts and reports concise. Do not write endless reasoning loops. Stop when the answer is clear. Maximum response length: ~{word_limit} words.
+</Response Format>
 """
 
 URL_ANALYZER_INSTRUCTIONS = """You are a URL analyzer assistant. Today is {date}.
@@ -101,9 +104,11 @@ Analyze the provided URL content to answer the `specific_query` within the overa
 </Instructions>
 
 <Response Format>
-1. **Overview**: Very brief summary of the page and major relevant menu links (if any).
-2. **Snippets**: Direct quotes relevant to the query.
-3. Keep it highly concise.
+1. **Overview**: Very brief summary of the page.
+2. **Relevant Links**: Extract links from the page, such as menu links but also other links you found on the page that might be relevant to follow up to answer the query.
+3. **Snippets**: Short, direct quotes relevant to the query.
+Keep your response concise. Do not summarize the entire page context and do not include extensive reasoning around the query. Maximum response length: ~{word_limit} words.
+</Response Format>
 """
 
 SUBAGENT_DELEGATION_INSTRUCTIONS = """# Sub-Agent Delegation
@@ -162,9 +167,9 @@ Think like a human researcher with limited time. Follow these steps:
    - Check the page character count provided in the prompt. 
    - If the total characters are under 30,000, simply call the `read_full_page` tool to read the whole page.
    - If the page exceeds 30k characters, do NOT use `read_full_page`, instead grep adn read page chunks in a smart way.
-3. **Extract Menus First**: Look for the main menu or relevant navigation links. If the page is long, use the `grep_page` tool to find "Menu", "Navigation", or other structural indicators. You must return these potential navigational URLs in your response to the orchestrator if they might hold the answer to the query.
-4. **Inspect (Long Pages)**: Use the `grep_page` tool with a regex pattern to look for relevant information (e.g., `pricing|cost|fee`, `\\d+`).
-5. **Read Context**: Use the `read_page_chunk` tool using the line numbers obtained from `grep_page` to read around areas of interest. When using `read_page_chunk`, DO NOT just read tiny snippets (e.g., 10 lines). Always read a substantially large context window (e.g., at least 40-50 lines, but more if it makes sense) to ensure you capture enough context of the surrounding information.
+3. **Extract Links First**: Look for the main menu or relevant navigation links. If the page is long, use the `grep_page` tool to find "Menu", "Navigation", or other structural indicators. You must return these potential navigational URLs in your response to the orchestrator if they might hold the answer to the query.
+4. **Inspect (Long Pages)**: Use the `grep_page` tool with a regex pattern to look for relevant information. **CRITICAL: Use specific words and exact patterns for grep. Do not use generic letters (like 'a') or overly broad regex, or you will hit match limits and fail to find the needed context.**
+5. **Read Context**: Use the `read_page_chunk` tool using the line numbers obtained from `grep_page` to read areas of interest. Always read a substantially large context window (e.g., at least 40-50 lines), but note the tool strictly caps output to prevent context flooding.
 6. **Extract**: If the page is relevant, extract the information that can help answer the specific query.
 </Instructions>
 
@@ -181,8 +186,9 @@ If a tool returns an error stating you have reached your quota, you MUST IMMEDIA
 </Tool Quotas>
 
 <Response Format>
-1. **Overview**: Very brief summary of the page and major relevant menu links (if any).
-2. **Snippets**: Direct quotes relevant to the query.
-3. Keep it concise.
+1. **Overview**: Very brief summary of the page.
+2. **Relevant Links**: Extract links from the page, such as menu links but also other links you found on the page that might be relevant to follow up to answer the query.
+3. **Snippets**: Short, direct quotes relevant to the query.
+Keep your response concise. Do not summarize the entire page context and do not include extensive reasoning around the query. Maximum response length: ~{word_limit} words.
 </Response Format>
 """

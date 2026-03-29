@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qwen3.5-3b-a3b Evaluator Leaderboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <header>
+        <div class="header-inner">
+            <h1>LocalResearch Agent: Qwen3.5-3b-a3b</h1>
+            <p>Isolated ablation analysis measuring the exact impact of single distinct toggles.</p>
+        </div>
+    </header>
+
+    <main class="dashboard">
+        <div id="status-message" class="status-msg">Loading comprehensive configurations...</div>
+
+        <!-- Group 1: Profiles -->
+        <section class="comparison-section">
+            <div class="section-header">
+                <h2>1. Search Profiles Ablation</h2>
+                <p><strong>Baseline Control:</strong> <code>Dynamic: OFF</code>, <code>BM25: OFF</code><br>
+                    Isolating the pure time and accuracy tradeoff between 'Shallow', 'Default', and 'Deep' looks.</p>
+            </div>
+            <div class="charts-wrap">
+                <div class="chart-box">
+                    <h3>Accuracy (Score 0.0 - 1.0)</h3>
+                    <div class="canvas-container">
+                        <canvas id="profilesScoreChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-box">
+                    <h3>Time Taken (Seconds)</h3>
+                    <div class="canvas-container">
+                        <canvas id="profilesTimeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Group 2: Dynamic Analysis -->
+        <section class="comparison-section">
+            <div class="section-header">
+                <h2>2. Dynamic Webpage Analysis Ablation</h2>
+                <p><strong>Baseline Control:</strong> <code>Profile: DEFAULT</code>, <code>BM25: OFF</code><br>
+                    Isolating the timeline and accuracy impact when dynamic analysis is ENABLED vs DISABLED.</p>
+            </div>
+            <div class="charts-wrap">
+                <div class="chart-box">
+                    <h3>Accuracy (Score 0.0 - 1.0)</h3>
+                    <div class="canvas-container">
+                        <canvas id="dynScoreChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-box">
+                    <h3>Time Taken (Seconds)</h3>
+                    <div class="canvas-container">
+                        <canvas id="dynTimeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Group 3: BM25 Hints -->
+        <section class="comparison-section">
+            <div class="section-header">
+                <h2>3. BM25 Hints Ablation</h2>
+                <p><strong>Baseline Control:</strong> <code>Profile: DEFAULT</code>, <code>Dynamic: ON</code><br>
+                    Isolating the timeline and accuracy impact when BM25 search hints are ENABLED vs DISABLED.</p>
+            </div>
+            <div class="charts-wrap">
+                <div class="chart-box">
+                    <h3>Accuracy (Score 0.0 - 1.0)</h3>
+                    <div class="canvas-container">
+                        <canvas id="bm25ScoreChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-box">
+                    <h3>Time Taken (Seconds)</h3>
+                    <div class="canvas-container">
+                        <canvas id="bm25TimeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Comprehensive Table -->
+        <section class="comparison-section">
+            <div class="section-header">
+                <h2>Configuration Leaderboard</h2>
+                <p>The complete, globally ranked evaluation across all 12 distinct test combinations.</p>
+            </div>
+            <div class="table-container">
+                <table id="leaderboard-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Profile</th>
+                            <th>Dynamic</th>
+                            <th>BM25</th>
+                            <th>Avg Score</th>
+                            <th>Avg Time</th>
+                            <th>Best Score</th>
+                            <th>Worst Score</th>
+                            <th>Fastest Time</th>
+                            <th>Slowest Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Populated via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

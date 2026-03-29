@@ -4,7 +4,7 @@ api:
 settings:
   use_dynamic_webpage_analysis: true
   search_provider: duckduckgo
-  use_bm25_hints: true
+  use_bm25_hints: false
 search_profile: default
 profiles:
   shallow:
@@ -17,15 +17,21 @@ profiles:
         read_todos: 3
         write_file: 3
         read_file: 3
+        max_tokens: 5000
       researcher:
         web_search: 2
         analyze_webpage: 3
         think_tool: 5
+        max_tokens: 5000
       url_analyzer:
         read_full_page: 1
         grep_page: 8
         read_page_chunk: 5
         think_tool: 3
+        max_tokens: 5000
+        max_chunk_lines: 150
+        max_grep_matches: 10
+        max_static_chars: 30000
   default:
     description: Balanced search with moderate depth, expect 2-3 solid sources per
       claim.
@@ -36,15 +42,21 @@ profiles:
         read_todos: 15
         write_file: 7
         read_file: 7
+        max_tokens: 8000
       researcher:
         web_search: 3
         analyze_webpage: 7
         think_tool: 10
+        max_tokens: 8000
       url_analyzer:
         read_full_page: 1
         grep_page: 15
         read_page_chunk: 10
         think_tool: 8
+        max_tokens: 7000
+        max_chunk_lines: 150
+        max_grep_matches: 10
+        max_static_chars: 60000
   deep:
     description: Extensive research, slower but covers more sources. Expect 4+ solid
       sources per claim, exploring multiple angles.
@@ -55,12 +67,18 @@ profiles:
         read_todos: 30
         write_file: 10
         read_file: 10
+        max_tokens: 10000
       researcher:
         web_search: 6
         analyze_webpage: 15
         think_tool: 30
+        max_tokens: 10000
       url_analyzer:
         read_full_page: 1
         grep_page: 50
         read_page_chunk: 25
         think_tool: 30
+        max_tokens: 10000
+        max_chunk_lines: 150
+        max_grep_matches: 10
+        max_static_chars: 100000

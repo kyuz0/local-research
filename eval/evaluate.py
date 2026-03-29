@@ -115,6 +115,8 @@ def build_variants(args, base_cfg):
 
     variants = []
     for provider, dynamic, bm25, profile in product(providers, dynamics, bm25s, profiles):
+        if not dynamic and bm25:
+            continue
         variants.append({
             "search_provider": provider,
             "use_dynamic_webpage_analysis": dynamic,
@@ -153,6 +155,7 @@ def main():
     parser.add_argument("--dataset", type=str, default="eval/dataset.jsonl", help="Path to the JSONL dataset")
     parser.add_argument("--output",  type=str, default="eval/results.jsonl",  help="Path to output JSONL file")
     parser.add_argument("--model",   type=str, default="unknown",             help="Model name to include in results")
+    parser.add_argument("--hardware", type=str, default="unknown",            help="Hardware on which the evaluation is run")
     parser.add_argument("--limit",   type=int, default=0,                     help="Limit number of queries to test")
     parser.add_argument("--runs",    type=int, default=3,                     help="Number of times to run each query per variant")
     parser.add_argument("--config",  "-c", type=str, default=None, metavar="PATH",
@@ -260,7 +263,7 @@ def main():
         dataset = dataset[:args.limit]
     print(f"\nLoaded {len(dataset)} items from {args.dataset}, model={model_name}\n")
 
-    # Load existing run counts keyed by (prompt, model, search_provider, dynamic, bm25)
+    # Load existing run counts keyed by (prompt, model, hardware, search_provider, dynamic, bm25, profile)
     existing_runs = collections.Counter()
     if os.path.exists(args.output):
         with open(args.output, 'r', encoding='utf-8') as f:
@@ -271,12 +274,13 @@ def main():
                         p   = res.get("prompt")
                         rc  = res.get("config", {})
                         m   = rc.get("model")
+                        hw  = rc.get("hardware", "unknown")
                         sp  = rc.get("search_provider")
                         dyn = rc.get("use_dynamic_webpage_analysis")
                         bm  = rc.get("use_bm25_hints")
                         prof = rc.get("search_profile", "default")
                         if p and m:
-                            existing_runs[(p, m, sp, dyn, bm, prof)] += 1
+                            existing_runs[(p, m, hw, sp, dyn, bm, prof)] += 1
                     except Exception:
                         pass
 
@@ -297,7 +301,7 @@ def main():
                 query    = item.get("query")
                 criteria = item.get("criteria", [])
 
-                counter_key = (query, model_name, vk[0], vk[1], vk[2], vk[3])
+                counter_key = (query, model_name, args.hardware, vk[0], vk[1], vk[2], vk[3])
                 runs_completed = existing_runs[counter_key]
 
                 if runs_completed >= args.runs:
@@ -365,6 +369,7 @@ def main():
                             "search_provider":              variant["search_provider"],
                             "search_profile":               variant["search_profile"],
                             "model":                        model_name,
+                            "hardware":                     args.hardware,
                         },
                     }
 
